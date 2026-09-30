@@ -1452,6 +1452,9 @@ if (ENABLE_DISCORD_RPC)
     target_link_libraries(shadps4 PRIVATE discord-rpc)
 endif()
 
+# BB Co-op mod (see src/mods/bbcoop/README.md)
+include(src/mods/bbcoop/bbcoop.cmake)
+
 # Install rules
 install(TARGETS shadps4 BUNDLE DESTINATION .)
 

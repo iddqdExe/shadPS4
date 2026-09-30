@@ -223,6 +223,12 @@ std::string_view NameOf(Class log_class) {
         return "Input";
     case Class::Tty:
         return "Tty";
+    case Class::BBCoop:
+        return "BBCoop";
+    case Class::BBCoop_Binding:
+        return "BBCoop.Binding";
+    case Class::BBCoop_Config:
+        return "BBCoop.Config";
     case Class::Count:
         return "Count";
     }
