@@ -1,0 +1,53 @@
+# SPDX-FileCopyrightText: 2026 BB Co-op contributors
+# SPDX-License-Identifier: GPL-2.0-or-later
+
+name: BB Co-op Windows
+
+on:
+  push:
+    branches: ["bbcoop/**"]
+  pull_request:
+    branches: ["bbcoop/**"]
+  workflow_dispatch:
+
+concurrency:
+  group: bbcoop-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  windows:
+    runs-on: windows-2025-vs2026
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          submodules: recursive
+
+      - name: Setup Visual Studio shell
+        uses: egor-tensin/vs-shell@v2
+        with:
+          arch: x64
+
+      - name: Cache build
+        uses: hendrikmuhs/ccache-action@v1.2.21
+        with:
+          key: bbcoop-windows-${{ hashFiles('**/CMakeLists.txt', 'cmake/**', 'src/mods/bbcoop/**/*.cmake') }}
+          append-timestamp: false
+
+      - name: Configure
+        run: >
+          cmake -G Ninja -B build -DCMAKE_BUILD_TYPE=Release
+          -DCMAKE_C_COMPILER=clang-cl -DCMAKE_CXX_COMPILER=clang-cl
+          -DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
+          -DBBCOOP_TESTS=ON
+
+      - name: Build
+        run: cmake --build build --parallel $env:NUMBER_OF_PROCESSORS
+
+      - name: Unit tests
+        run: ctest --test-dir build -R "^BBCoop\." --output-on-failure
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: shadps4-bbcoop-win64-${{ github.sha }}
+          path: build/shadPS4.exe
