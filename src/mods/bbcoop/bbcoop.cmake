@@ -21,6 +21,10 @@ target_include_directories(bbcoop_core PUBLIC ${CMAKE_SOURCE_DIR}/src/mods)
 target_link_libraries(bbcoop_core PUBLIC fmt::fmt toml11::toml11)
 
 target_link_libraries(shadps4 PRIVATE bbcoop_core)
+target_sources(shadps4 PRIVATE
+    ${BBCOOP_DIR}/runtime/mod.cpp
+    ${BBCOOP_DIR}/runtime/mod.h
+)
 
 if (BBCOOP_TESTS)
     enable_testing()

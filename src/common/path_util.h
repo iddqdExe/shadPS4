@@ -108,6 +108,14 @@ constexpr auto LOG_FILE = "shad_log.txt";
 void SetUserPath(PathType user_path, const std::filesystem::path& new_path);
 
 /**
+ * Moves every user path under a new root directory (used by --profile).
+ * Paths that are not below the current user directory are left unchanged.
+ *
+ * @param new_root New user directory; created if missing.
+ */
+void SetUserRoot(const std::filesystem::path& new_root);
+
+/**
  * Recursively searches for an installed game by its ID.
  * Limits search depth to prevent excessive filesystem traversal.
  *

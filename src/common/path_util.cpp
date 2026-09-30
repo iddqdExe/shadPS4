@@ -27,6 +27,10 @@
 #endif
 #endif
 
+#ifdef _WIN32
+#include <shellapi.h>
+#endif
+
 namespace Common::FS {
 
 namespace fs = std::filesystem;
@@ -85,6 +89,43 @@ static std::optional<std::filesystem::path> GetBundleParentDirectory() {
 }
 #endif
 
+// Returns the directory passed as "--profile DIR" or "--profile=DIR" on the command line, if any.
+// UserPaths is built during static initialization and writes into the user directory right away,
+// before main() can parse arguments. A --profile run must never touch the default user directory,
+// so the flag has to be honoured here.
+#ifdef _WIN32
+static std::optional<fs::path> FindProfileArgument() {
+    int argc = 0;
+    LPWSTR* argv = CommandLineToArgvW(GetCommandLineW(), &argc);
+    if (argv == nullptr) {
+        return std::nullopt;
+    }
+    std::optional<fs::path> result;
+    for (int i = 1; i < argc; ++i) {
+        const std::wstring_view arg{argv[i]};
+        if (arg == L"--") {
+            break;
+        }
+        if (arg == L"--profile") {
+            if (i + 1 < argc) {
+                result = fs::path{argv[i + 1]};
+            }
+            break;
+        }
+        if (arg.starts_with(L"--profile=")) {
+            result = fs::path{std::wstring{arg.substr(10)}};
+            break;
+        }
+    }
+    LocalFree(argv);
+    return result;
+}
+#else
+static std::optional<fs::path> FindProfileArgument() {
+    return std::nullopt;
+}
+#endif
+
 static auto UserPaths = [] {
     // Try the portable user directory first.
     auto user_dir = std::filesystem::current_path() / PORTABLE_DIR;
@@ -106,6 +147,11 @@ static auto UserPaths = [] {
         SHGetFolderPath(NULL, CSIDL_APPDATA, NULL, 0, appdata);
         user_dir = std::filesystem::path(appdata) / "shadPS4";
 #endif
+    }
+
+    if (const auto profile = FindProfileArgument(); profile && !profile->empty()) {
+        user_dir = std::filesystem::absolute(*profile);
+        std::filesystem::create_directories(user_dir);
     }
 
     std::unordered_map<PathType, fs::path> paths;
@@ -196,6 +242,20 @@ void SetUserPath(PathType shad_path, const fs::path& new_path) {
     }
 
     UserPaths.insert_or_assign(shad_path, new_path);
+}
+
+void SetUserRoot(const std::filesystem::path& new_root) {
+    const auto old_root = UserPaths.at(PathType::UserDir);
+    for (auto& [type, path] : UserPaths) {
+        const auto relative = path.lexically_relative(old_root);
+        // An empty result means "no relative path" (e.g. another drive): outside the user dir.
+        if (relative.empty() || *relative.begin() == "..") {
+            continue;
+        }
+        auto updated = relative == "." ? new_root : new_root / relative;
+        std::filesystem::create_directories(updated);
+        path = std::move(updated);
+    }
 }
 
 std::optional<fs::path> FindGameByID(const fs::path& dir, const std::string& game_id,

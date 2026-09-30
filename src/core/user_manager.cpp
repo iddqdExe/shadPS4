@@ -239,6 +239,25 @@ static void CheckAndMigrateTrophies(TransferOption option) {
     }
 }
 
+// The migration dialog only makes sense when the old save/trophy layout is really present.
+// A fresh profile has nothing to migrate and must not block on a modal dialog.
+static bool HasLegacyUserData() {
+    std::error_code ec;
+    const auto old_save_dir =
+        Common::FS::GetUserPath(Common::FS::PathType::UserDir) / "savedata" / "1";
+    if (fs::exists(old_save_dir, ec) && !fs::is_empty(old_save_dir, ec)) {
+        return true;
+    }
+    const auto& old_trophy_base_dir = Common::FS::GetUserPath(Common::FS::PathType::GameDataDir);
+    for (fs::directory_iterator it{old_trophy_base_dir, ec}, end; !ec && it != end;
+         it.increment(ec)) {
+        if (it->is_directory(ec) && fs::exists(it->path() / "TrophyFiles", ec)) {
+            return true;
+        }
+    }
+    return false;
+}
+
 Users UserManager::CreateDefaultUsers() {
     Users default_users;
     default_users.user = {
@@ -296,7 +315,7 @@ Users UserManager::CreateDefaultUsers() {
             std::filesystem::create_directory(user_dir / "savedata");
             std::filesystem::create_directory(user_dir / "trophy");
             std::filesystem::create_directory(user_dir / "inputs");
-            if (u.user_id == 1000) {
+            if (u.user_id == 1000 && HasLegacyUserData()) {
                 TransferOption user_choice = AskMigrationOption();
                 CheckAndMigrateSaves(user_choice);
                 CheckAndMigrateTrophies(user_choice);
@@ -315,6 +334,20 @@ bool UserManager::SetDefaultUser(u32 user_id) {
 
     SetControllerPort(user_id, 1); // Set default user to port 1
     return Save();
+}
+
+bool UserManager::SetDefaultUserForProcess(u32 user_id) {
+    User* target = GetUserByID(static_cast<s32>(user_id));
+    if (target == nullptr) {
+        return false;
+    }
+    for (auto& user : m_users.user) {
+        if (user.player_index == 1) {
+            user.player_index = -1;
+        }
+    }
+    target->player_index = 1;
+    return true;
 }
 
 User UserManager::GetDefaultUser() {

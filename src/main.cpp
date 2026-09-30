@@ -12,6 +12,7 @@
 #include <fmt/format.h>
 #include <fmt/ranges.h>
 
+#include "bbcoop/runtime/mod.h"
 #include "common/arch.h"
 #include "common/key_manager.h"
 #include "common/logging/log.h"
@@ -57,6 +58,9 @@ int main(int argc, char* argv[]) {
     std::vector<std::string> gameArgs;
     std::optional<std::filesystem::path> overrideRoot;
     std::optional<int> waitPid;
+    std::optional<std::filesystem::path> profileDir;
+    std::optional<u32> userId;
+    std::optional<u16> coopPort;
     bool waitForDebugger = false;
     bool userfaultfd = false;
 
@@ -90,6 +94,10 @@ int main(int argc, char* argv[]) {
     app.add_option("-f,--fullscreen", fullscreenStr, "Fullscreen mode (true|false)");
 
     app.add_option("--override-root", overrideRoot)->check(CLI::ExistingDirectory);
+    app.add_option("--profile", profileDir, "Use DIR as the user directory for this process");
+    app.add_option("--user-id", userId, "Default local user for this process only");
+    app.add_option("--coop-port", coopPort, "BB Co-op UDP port (overrides bbcoop.toml)")
+        ->check(CLI::Range(1, 65535));
 
     app.add_flag("--wait-for-debugger", waitForDebugger);
     app.add_option("--wait-for-pid", waitPid);
@@ -148,6 +156,11 @@ int main(int argc, char* argv[]) {
     if (waitPid)
         Core::Debugger::WaitForPid(*waitPid);
 
+    if (profileDir) {
+        std::filesystem::create_directories(*profileDir);
+        Common::FS::SetUserRoot(std::filesystem::absolute(*profileDir));
+    }
+
     // Initialize main log with default config
     Common::Log::Setup("shadps4.log");
 
@@ -161,6 +174,15 @@ int main(int argc, char* argv[]) {
     // Load configurations
     EmulatorSettings.Load();
     UserSettings.Load();
+    if (userId) {
+        if (!UserManagement.SetDefaultUserForProcess(*userId)) {
+            LOG_CRITICAL(Config, "Local user ID {} does not exist in users.json", *userId);
+            return 1;
+        }
+        LOG_INFO(Config, "Using local user ID {} for this process", *userId);
+    }
+    BBCoop::SetCliOverrides({.port = coopPort});
+    BBCoop::Initialize();
 
     if (bigPicture) {
         BigPictureMode::Launch(argv[0], sameProcess);
