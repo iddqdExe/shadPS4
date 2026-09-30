@@ -12,12 +12,18 @@ if (NOT TARGET GTest::gtest_main)
 
     # googletest builds its own targets with -WX under clang-cl, and clang 22 flags
     # a char8_t -> char32_t conversion in gtest-printers.h (-Wcharacter-conversion).
+    # Older clang (e.g. 20.x on GitHub runners) does not know the warning, and under -WX
+    # an unknown -Wno-... option is itself an error, so only pass it when it is supported.
     if (CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
-        foreach (gtest_target gtest gtest_main)
-            if (TARGET ${gtest_target})
-                target_compile_options(${gtest_target} PRIVATE -Wno-character-conversion)
-            endif()
-        endforeach()
+        include(CheckCXXCompilerFlag)
+        check_cxx_compiler_flag(-Wno-character-conversion BBCOOP_HAS_WNO_CHARACTER_CONVERSION)
+        if (BBCOOP_HAS_WNO_CHARACTER_CONVERSION)
+            foreach (gtest_target gtest gtest_main)
+                if (TARGET ${gtest_target})
+                    target_compile_options(${gtest_target} PRIVATE -Wno-character-conversion)
+                endif()
+            endforeach()
+        endif()
     endif()
 endif()
 include(GoogleTest)
