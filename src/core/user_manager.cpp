@@ -240,22 +240,25 @@ static void CheckAndMigrateTrophies(TransferOption option) {
 }
 
 // The migration dialog only makes sense when the old save/trophy layout is really present.
-// A fresh profile has nothing to migrate and must not block on a modal dialog.
+// A fresh profile has nothing to migrate and must not block on a modal dialog. This mirrors the
+// checks of CheckAndMigrateSaves / CheckAndMigrateTrophies; if they cannot be evaluated, the
+// dialog is shown anyway.
 static bool HasLegacyUserData() {
-    std::error_code ec;
-    const auto old_save_dir =
-        Common::FS::GetUserPath(Common::FS::PathType::UserDir) / "savedata" / "1";
-    if (fs::exists(old_save_dir, ec) && !fs::is_empty(old_save_dir, ec)) {
-        return true;
-    }
-    const auto& old_trophy_base_dir = Common::FS::GetUserPath(Common::FS::PathType::GameDataDir);
-    for (fs::directory_iterator it{old_trophy_base_dir, ec}, end; !ec && it != end;
-         it.increment(ec)) {
-        if (it->is_directory(ec) && fs::exists(it->path() / "TrophyFiles", ec)) {
+    const auto& user_dir = Common::FS::GetUserPath(Common::FS::PathType::UserDir);
+    try {
+        const auto old_save_dir = user_dir / "savedata" / "1";
+        if (fs::exists(old_save_dir) && !fs::is_empty(old_save_dir)) {
             return true;
         }
+        for (auto const& entry : fs::directory_iterator(user_dir / "game_data")) {
+            if (entry.is_directory() && fs::exists(entry.path() / "TrophyFiles")) {
+                return true;
+            }
+        }
+        return false;
+    } catch (const std::exception&) {
+        return true;
     }
-    return false;
 }
 
 Users UserManager::CreateDefaultUsers() {
