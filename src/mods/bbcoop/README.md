@@ -35,14 +35,14 @@ from a per-frame tick.
 | Call | Use |
 |---|---|
 | `OnEveryFrame(owner, callback)` | Per-frame callback, called with the tick number (from 1) in registration order. Register before the game is loaded (from `BBCoop::Initialize()`). |
-| `PostToGameThread(task)` | Queue work for the next tick from any thread; `false` when the mod is inactive or 256 tasks are already waiting. |
-| `IsGameThread()` / `FrameCount()` | Thread check and tick counter. |
-| `CallGame<R>(symbol, args...)` | Call a game function by symbol (game thread only, System V ABI). |
+| `PostToGameThread(task)` | Queue work for the next tick from any thread; `false` (check it) when the mod is inactive or 256 tasks are already waiting. Dropped tasks are counted and the total is added to the periodic tick line. |
+| `IsGameThread()` / `FrameCount()` | Thread check and tick counter. `IsGameThread()` is false everywhere until the first tick. |
+| `CallGame<R>(symbol, args...)` | Call a game function by symbol (game thread, after the first tick; System V ABI). Arguments must be integers, enums, pointers or floats; pass `std::uint64_t` / `std::int64_t` explicitly for 64-bit parameters, no bare literals. |
 
 **Tick point.** The tick is a hook on `idle_heartbeat_epilogue`, RVA `0x01BFE882`: the
 `add rsp,0x7E8` (7 bytes `48 81 C4 E8 07 00 00`) before the register pops and the `ret` of the
-function at `0x01BFB2A0` (the per-frame idle/heartbeat function in the RE notes; the tick rate in
-the log shows whether it is one tick per frame). It is installed as a `Mid` hook and steals
+function at `0x01BFB2A0` (the per-frame idle/heartbeat function; in the world it ticks about 60
+times per second, see "Game states"). It is installed as a `Mid` hook and steals
 exactly that instruction. Checked on the decrypted EU 1.09 ELF: no direct branch or call
 anywhere in the image, and no RIP-relative operand, targets the bytes inside the stolen region
 (`0x01BFE883..0x01BFE888`), and the function has no indirect jump (so no jump table). The first
@@ -53,8 +53,16 @@ switching means making its row required in `docs/re/eu109-symbols.extra.tsv` and
 tables (`Build-SymbolDb`, `Generate-Signatures`, `bbcoop_sigcheck`).
 
 **Stack budget.** Callbacks and tasks run on the game's stack inside the hook handler: 16 KB at
-most for the callback and everything it calls, no deep recursion, no large stack buffers (the game's
-stacks have no guard page).
+most for the callback and everything it calls (a `CallGame` target's own stack use counts too), no
+deep recursion, no large stack buffers (the game's stacks have no guard page).
+
+**Blocking.** They also run inside the game's frame: anything that blocks (I/O, waiting for another
+thread, a contended lock) stalls the game. Do such work on another thread and post the result back
+with `PostToGameThread`.
+
+**Nested ticks.** If a task or callback calls into the game and that code reaches the per-frame site
+again on the same thread, the nested tick is skipped (error line `nested per-frame tick skipped`,
+logged for the first one and then every 1800th).
 
 **Exceptions.** An exception that leaves a task or a callback is caught and logged
 (`game-thread task threw`, `frame callback '<owner>' threw`, or the `unknown exception` variants).
@@ -64,8 +72,25 @@ A task is dropped; a callback is disabled for good. The tick keeps running.
 Expected: the two `threw` lines, ticks go on, no `Unhandled Exception` line.
 
 **Log.** `BB Co-op active: 1 hooks, 0 patches`, `game thread tick started`, then
-`tick: frame N (R ticks/s)` every 1800 ticks. Filter a log with `grep -E "\[BBCoop|BB Co-op"`
-(plain words such as `tick` or `disabled` also match emulator lines).
+`tick: frame N (R ticks/s)` every 1800 ticks (`, D posted tasks dropped so far` is appended when
+`PostToGameThread` has refused tasks). Filter a log with `grep -E "\[BBCoop|BB Co-op"` (plain words
+such as `tick` or `disabled` also match emulator lines).
 
-**Game states.** Which game states the tick runs in (title screen, loading, pause menu, world) is
-recorded here after the first in-game run.
+**Game states.** Observed in bench run `20261002-000218-b8-tick` (profile p1 with user patches,
+`self_test_exceptions = true`, one pass through title screen, save load, Options menu and a lantern
+trip to Central Yharnam):
+- Title screen: no tick. `game thread tick started` (thread `Game:Main`) came 23 s after the mod
+  activated, right as the save began loading; the Hunter's Dream map (m21) opened 1.4 s later.
+  Until then `FrameCount()` is 0 and `IsGameThread()` is false.
+- World: about 60 ticks per second (`tick: frame 3600` 59.5, `tick: frame 10800` 59.8). The window
+  ending at frame 9000 measured 56.0 and was not examined further.
+- Pause: the tick keeps running with the Options menu open (a window that contained about 20 s of
+  the menu measured 60.0 ticks/s); Bloodborne does not pause the game.
+- Loading screens between areas: ticks slow down or stop for a few seconds (the window with the
+  lantern travel to Central Yharnam, m24, measured 54.0 ticks/s). The first window (51.3 ticks/s)
+  contains the save load.
+- Caveat: the rate lines average 1800 ticks (about 30 s at 60 per second), so a loading screen
+  shows only as a dip of the average. How long ticks stop, and whether they stop completely or
+  just slow down, was not measured; code that must know has to count ticks itself (`FrameCount()`).
+- No `second thread` line and no `Unhandled Exception` line; the two `self_test_*` callbacks threw
+  once each and were disabled, and the game behaved normally.

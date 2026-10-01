@@ -23,7 +23,9 @@ void ArmExceptionSelfTest() {
         throw std::runtime_error("BB Co-op self-test exception");
     });
     Runtime::OnEveryFrame("self_test_unknown_exception", [](std::uint64_t) { throw 42; });
-    LOG_INFO(BBCoop, "exception self-test armed: two frame callbacks will each throw once");
+    LOG_INFO(BBCoop,
+             "exception self-test armed: two frame callbacks will each throw once, when the game "
+             "is loaded and BB Co-op is active (the first tick)");
 }
 } // namespace
 

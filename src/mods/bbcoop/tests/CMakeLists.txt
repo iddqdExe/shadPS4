@@ -29,6 +29,7 @@ endif()
 include(GoogleTest)
 
 add_executable(bbcoop_core_tests
+    call_args_test.cpp
     config_test.cpp
     detour_test.cpp
     guest_memory_test.cpp
@@ -37,6 +38,7 @@ add_executable(bbcoop_core_tests
     patch_table_test.cpp
     relocator_test.cpp
     resolver_test.cpp
+    scoped_entry_test.cpp
     signature_test.cpp
     symbols_test.cpp
     task_queue_test.cpp

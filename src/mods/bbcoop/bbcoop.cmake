@@ -11,8 +11,10 @@ option(BBCOOP_TESTS "Build BB Co-op unit tests" OFF)
 set(BBCOOP_DIR ${CMAKE_CURRENT_LIST_DIR})
 
 add_library(bbcoop_core STATIC
+    ${BBCOOP_DIR}/core/call_args.h
     ${BBCOOP_DIR}/core/config.cpp
     ${BBCOOP_DIR}/core/config.h
+    ${BBCOOP_DIR}/core/scoped_entry.h
     ${BBCOOP_DIR}/core/task_queue.h
     ${BBCOOP_DIR}/binding/detour.cpp
     ${BBCOOP_DIR}/binding/detour.h
