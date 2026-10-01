@@ -15,6 +15,8 @@ add_library(bbcoop_core STATIC
     ${BBCOOP_DIR}/core/config.h
     ${BBCOOP_DIR}/binding/patch_table.cpp
     ${BBCOOP_DIR}/binding/patch_table.h
+    ${BBCOOP_DIR}/binding/relocator.cpp
+    ${BBCOOP_DIR}/binding/relocator.h
     ${BBCOOP_DIR}/binding/resolver.cpp
     ${BBCOOP_DIR}/binding/resolver.h
     ${BBCOOP_DIR}/binding/signature.cpp
