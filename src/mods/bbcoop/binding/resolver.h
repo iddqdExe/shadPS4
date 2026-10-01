@@ -11,6 +11,8 @@
 #include <string_view>
 #include <vector>
 
+#include <Zydis/Zydis.h>
+
 namespace BBCoop::Binding {
 
 enum class SymbolKind : std::uint8_t { Function, Site, Global, Data, Patch };
@@ -49,7 +51,8 @@ enum class ResolveError : std::uint8_t {
     HintMismatch, ///< Reference mode: no match at match_rva, or the result differs from target_rva.
     BadOperand,   ///< RelativeOperand: the instruction is outside the text, cut off, undecodable, or
                   ///< has no RIP-relative / relative operand.
-    OutOfText,    ///< Match mode: match + operand_offset lies outside the executable segment.
+    OutOfText,    ///< A Function, Site or Patch target lies outside the executable segment (in
+                  ///< either mode); Global and Data targets may lie anywhere.
     ZeroRva,      ///< The result is RVA 0, which is never a valid symbol.
 };
 
@@ -87,6 +90,14 @@ struct ResolveResult {
 
 /// Resolves every spec independently; failures are collected, never thrown.
 ResolveResult ResolveSymbols(const ImageView& image, std::span<const SymbolSpec> specs);
+
+/// The absolute target of the first visible [rip+disp] operand or relative immediate (call, jmp,
+/// jcc) of an instruction decoded at insn_rva; nullopt when it has none. This is the one definition
+/// of TargetMode::RelativeOperand: ResolveSymbols uses it, and so must any tool that indexes
+/// references for the resolver (sigmaker).
+std::optional<std::uint64_t> RelativeOperandTarget(const ZydisDecodedInstruction& insn,
+                                                   const ZydisDecodedOperand* operands,
+                                                   std::uint64_t insn_rva);
 
 /// XXH3-64 of the executable segment; identifies the reference image.
 std::uint64_t Fingerprint(std::span<const std::uint8_t> text);

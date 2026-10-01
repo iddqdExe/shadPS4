@@ -4,10 +4,12 @@
 #include <algorithm>
 #include <cstdint>
 #include <iterator>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <vector>
 
+#include <Zydis/Zydis.h>
 #include <gtest/gtest.h>
 
 #include "bbcoop/binding/resolver.h"
@@ -237,15 +239,48 @@ TEST(ResolverTest, MatchTargetMustLieInsideText) {
     EXPECT_FALSE(r.AllRequiredResolved());
 }
 
-TEST(ResolverTest, RelativeOperandTargetMayLieOutsideText) {
+TEST(ResolverTest, GlobalAndDataTargetsMayLieOutsideText) {
     auto text = MakeText();
     // call rel32 at 0x70 whose target (0x1070 + 5 + 0x2000) is far outside the 0x100-byte text:
     // globals and data legitimately live there.
     PutBytes(text, 0x70, {0xE8, 0x00, 0x20, 0x00, 0x00});
-    const SymbolSpec specs[] = {SpecAt("far", "E8 00 20 00 00", 0, TargetMode::RelativeOperand)};
+    SymbolSpec specs[] = {SpecAt("far_global", "E8 00 20 00 00", 0, TargetMode::RelativeOperand),
+                          SpecAt("far_data", "E8 00 20 00 00", 0, TargetMode::RelativeOperand)};
+    specs[0].kind = SymbolKind::Global;
+    specs[1].kind = SymbolKind::Data;
     const auto r = ResolveSymbols({text, kTextRva, false}, specs);
     ASSERT_TRUE(r.failures.empty());
     EXPECT_EQ(r.rvas[0], 0x3075u);
+    EXPECT_EQ(r.rvas[1], 0x3075u);
+}
+
+TEST(ResolverTest, CodeTargetsOutsideTextFailInEitherMode) {
+    auto text = MakeText();
+    // call rel32 at 0x70 to 0x3075, outside the text [0x1000, 0x1100).
+    PutBytes(text, 0x70, {0xE8, 0x00, 0x20, 0x00, 0x00});
+    // A function, site or patch is code, so its address must lie in the text whichever mode
+    // derived it (0B-R40): a RelativeOperand row bound to a caller must not resolve to data.
+    SymbolSpec specs[] = {SpecAt("function", "E8 00 20 00 00", 0, TargetMode::RelativeOperand),
+                          SpecAt("site", "E8 00 20 00 00", 0, TargetMode::RelativeOperand),
+                          SpecAt("patch", "E8 00 20 00 00", 0, TargetMode::RelativeOperand),
+                          SpecAt("function_match", "E8 00 20 00 00", 0x1000)};
+    specs[0].kind = SymbolKind::Function;
+    specs[2].kind = SymbolKind::Patch;
+    specs[3].kind = SymbolKind::Function;
+    for (const bool reference : {false, true}) {
+        if (reference) {
+            for (auto& spec : specs) {
+                spec.match_rva = 0x1070;
+                spec.target_rva = spec.mode == TargetMode::Match ? 0x2070 : 0x3075;
+            }
+        }
+        const auto r = ResolveSymbols({text, kTextRva, reference}, specs);
+        ASSERT_EQ(r.failures.size(), 4u) << "reference=" << reference;
+        for (const auto& f : r.failures) {
+            EXPECT_EQ(f.error, ResolveError::OutOfText) << f.name << " reference=" << reference;
+        }
+        EXPECT_EQ(r.ResolvedCount(), 0u);
+    }
 }
 
 TEST(ResolverTest, ZeroTextRvaLayoutResolvesNonZeroSymbols) {
@@ -389,4 +424,26 @@ TEST(ResolverTest, FormatFailureNamesSymbolErrorAndDetail) {
     ASSERT_EQ(r.failures.size(), 2u);
     EXPECT_EQ(FormatFailure(r.failures[0]), "missing: not found");
     EXPECT_EQ(FormatFailure(r.failures[1]), "twice: ambiguous: matches at 0x1080 and 0x10a0");
+}
+
+TEST(ResolverTest, RelativeOperandTargetPicksTheFirstRipOrRelativeOperand) {
+    ZydisDecoder decoder;
+    ZydisDecoderInit(&decoder, ZYDIS_MACHINE_MODE_LONG_64, ZYDIS_STACK_WIDTH_64);
+    const auto target_of = [&](std::vector<std::uint8_t> code,
+                               std::uint64_t rva) -> std::optional<std::uint64_t> {
+        ZydisDecodedInstruction insn;
+        ZydisDecodedOperand ops[ZYDIS_MAX_OPERAND_COUNT];
+        EXPECT_TRUE(ZYAN_SUCCESS(
+            ZydisDecoderDecodeFull(&decoder, code.data(), code.size(), &insn, ops)));
+        return RelativeOperandTarget(insn, ops, rva);
+    };
+    // mov rax,[rip+0x10]; lea rdx,[rip-7]
+    EXPECT_EQ(target_of({0x48, 0x8B, 0x05, 0x10, 0x00, 0x00, 0x00}, 0x1040), 0x1057u);
+    EXPECT_EQ(target_of({0x48, 0x8D, 0x15, 0xF9, 0xFF, 0xFF, 0xFF}, 0x2000), 0x2000u);
+    // call rel32; jz rel8
+    EXPECT_EQ(target_of({0xE8, 0x9B, 0xFF, 0xFF, 0xFF}, 0x1060), 0x1000u);
+    EXPECT_EQ(target_of({0x74, 0x10}, 0x2000), 0x2012u);
+    // push rbp; mov rax,[rdi+8]: no RIP-relative or relative operand
+    EXPECT_EQ(target_of({0x55}, 0x1000), std::nullopt);
+    EXPECT_EQ(target_of({0x48, 0x8B, 0x47, 0x08}, 0x1000), std::nullopt);
 }

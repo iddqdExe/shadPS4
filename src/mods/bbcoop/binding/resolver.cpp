@@ -23,13 +23,17 @@ bool InText(const ImageView& image, std::uint64_t rva) {
     return rva >= image.text_rva && rva - image.text_rva < image.text.size();
 }
 
+bool IsCode(SymbolKind kind) {
+    return kind == SymbolKind::Function || kind == SymbolKind::Site || kind == SymbolKind::Patch;
+}
+
 std::string TextRangeString(const ImageView& image) {
     return std::format("[{:#x}, {:#x})", image.text_rva, image.text_rva + image.text.size());
 }
 
-/// Absolute target of the first [rip+disp] or relative-immediate operand of the instruction at
-/// insn_rva; on failure the error string names the real cause (it becomes ResolveFailure::detail).
-std::expected<std::uint64_t, std::string> RelativeOperandTarget(const ImageView& image,
+/// Decodes the instruction at insn_rva and returns its RelativeOperandTarget; on failure the
+/// error string names the real cause (it becomes ResolveFailure::detail).
+std::expected<std::uint64_t, std::string> DecodeRelativeOperand(const ImageView& image,
                                                                 std::uint64_t insn_rva) {
     if (!InText(image, insn_rva)) {
         return std::unexpected(std::format("instruction address {:#x} is outside the text {}",
@@ -48,8 +52,19 @@ std::expected<std::uint64_t, std::string> RelativeOperandTarget(const ImageView&
                 ? std::format("instruction at {:#x} is cut off by the end of the text", insn_rva)
                 : std::format("cannot decode an instruction at {:#x}", insn_rva));
     }
+    if (const auto target = RelativeOperandTarget(insn, ops, insn_rva)) {
+        return *target;
+    }
+    return std::unexpected(
+        std::format("instruction at {:#x} has no RIP-relative operand", insn_rva));
+}
+} // namespace
+
+std::optional<std::uint64_t> RelativeOperandTarget(const ZydisDecodedInstruction& insn,
+                                                   const ZydisDecodedOperand* operands,
+                                                   std::uint64_t insn_rva) {
     for (std::uint8_t i = 0; i < insn.operand_count_visible; ++i) {
-        const auto& op = ops[i];
+        const auto& op = operands[i];
         const bool rip_memory = op.type == ZYDIS_OPERAND_TYPE_MEMORY && op.mem.base == ZYDIS_REGISTER_RIP;
         const bool relative = op.type == ZYDIS_OPERAND_TYPE_IMMEDIATE && op.imm.is_relative;
         ZyanU64 target = 0;
@@ -58,9 +73,8 @@ std::expected<std::uint64_t, std::string> RelativeOperandTarget(const ImageView&
             return target;
         }
     }
-    return std::unexpected(std::format("instruction at {:#x} has no RIP-relative operand", insn_rva));
+    return std::nullopt;
 }
-} // namespace
 
 std::uint64_t Fingerprint(std::span<const std::uint8_t> text) {
     return XXH3_64bits(text.data(), text.size());
@@ -148,7 +162,7 @@ ResolveResult ResolveSymbols(const ImageView& image, std::span<const SymbolSpec>
             match_rva + static_cast<std::uint64_t>(static_cast<std::int64_t>(spec.operand_offset));
         std::uint64_t target = at;
         if (spec.mode == TargetMode::RelativeOperand) {
-            const auto t = RelativeOperandTarget(image, at);
+            const auto t = DecodeRelativeOperand(image, at);
             if (!t) {
                 fail(ResolveError::BadOperand, t.error());
                 continue;
@@ -160,9 +174,9 @@ ResolveResult ResolveSymbols(const ImageView& image, std::span<const SymbolSpec>
                  std::format("resolved {:#x}, table says {:#x}", target, spec.target_rva));
             continue;
         }
-        // A Match target is a position in the text; a RelativeOperand target may legitimately lie
-        // outside it (globals and data).
-        if (spec.mode == TargetMode::Match && !InText(image, target)) {
+        // Code (a function, site or patch) lies in the text whichever mode derived its address;
+        // globals and data legitimately lie outside it.
+        if (IsCode(spec.kind) && !InText(image, target)) {
             fail(ResolveError::OutOfText,
                  std::format("target {:#x} is outside the text {}", target, TextRangeString(image)));
             continue;
