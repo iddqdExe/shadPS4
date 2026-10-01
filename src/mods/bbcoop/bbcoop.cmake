@@ -13,6 +13,8 @@ set(BBCOOP_DIR ${CMAKE_CURRENT_LIST_DIR})
 add_library(bbcoop_core STATIC
     ${BBCOOP_DIR}/core/config.cpp
     ${BBCOOP_DIR}/core/config.h
+    ${BBCOOP_DIR}/binding/resolver.cpp
+    ${BBCOOP_DIR}/binding/resolver.h
     ${BBCOOP_DIR}/binding/signature.cpp
     ${BBCOOP_DIR}/binding/signature.h
 )
@@ -20,7 +22,7 @@ add_library(bbcoop_core STATIC
 # target inherits it. Clear the inherited list so bbcoop_core really only sees src/mods.
 set_target_properties(bbcoop_core PROPERTIES INCLUDE_DIRECTORIES "")
 target_include_directories(bbcoop_core PUBLIC ${CMAKE_SOURCE_DIR}/src/mods)
-target_link_libraries(bbcoop_core PUBLIC fmt::fmt toml11::toml11)
+target_link_libraries(bbcoop_core PUBLIC fmt::fmt toml11::toml11 Zydis::Zydis xxHash::xxhash xbyak::xbyak)
 
 target_link_libraries(shadps4 PRIVATE bbcoop_core)
 target_sources(shadps4 PRIVATE

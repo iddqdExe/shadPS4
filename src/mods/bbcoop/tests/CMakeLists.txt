@@ -30,6 +30,7 @@ include(GoogleTest)
 
 add_executable(bbcoop_core_tests
     config_test.cpp
+    resolver_test.cpp
     signature_test.cpp
 )
 # Same isolation as bbcoop_core: drop the include_directories(src) inherited from the top level.
