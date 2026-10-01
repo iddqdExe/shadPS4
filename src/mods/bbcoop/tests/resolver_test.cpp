@@ -381,3 +381,12 @@ TEST(ResolverTest, AmbiguousMatchCountIsCappedAtTwo) {
     EXPECT_EQ(r.failures[0].error, ResolveError::Ambiguous);
     EXPECT_EQ(r.failures[0].match_count, 2u);
 }
+
+TEST(ResolverTest, FormatFailureNamesSymbolErrorAndDetail) {
+    const auto text = MakeText();
+    const SymbolSpec specs[] = {Spec("missing", "0F 0B"), Spec("twice", "90 90 31 C0")};
+    const auto r = ResolveSymbols({text, kTextRva, false}, specs);
+    ASSERT_EQ(r.failures.size(), 2u);
+    EXPECT_EQ(FormatFailure(r.failures[0]), "missing: not found");
+    EXPECT_EQ(FormatFailure(r.failures[1]), "twice: ambiguous: matches at 0x1080 and 0x10a0");
+}

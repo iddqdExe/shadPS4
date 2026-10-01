@@ -93,4 +93,7 @@ std::uint64_t Fingerprint(std::span<const std::uint8_t> text);
 
 std::string_view ToString(ResolveError error);
 
+/// "name: error" or "name: error: detail", the one-line form used in logs and tool output.
+std::string FormatFailure(const ResolveFailure& failure);
+
 } // namespace BBCoop::Binding

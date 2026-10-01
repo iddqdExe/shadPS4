@@ -86,6 +86,12 @@ std::string_view ToString(ResolveError error) {
     return "unknown";
 }
 
+std::string FormatFailure(const ResolveFailure& failure) {
+    return failure.detail.empty()
+               ? std::format("{}: {}", failure.name, ToString(failure.error))
+               : std::format("{}: {}: {}", failure.name, ToString(failure.error), failure.detail);
+}
+
 bool ResolveResult::AllRequiredResolved() const {
     return std::none_of(failures.begin(), failures.end(),
                         [](const ResolveFailure& f) { return f.required; });
