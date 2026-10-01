@@ -19,6 +19,12 @@ namespace {
 static_assert(offsetof(HookContext, ymm) % 32 == 0);
 // The System V red zone below the guest's rsp, which the guest may be using at the site.
 constexpr std::uint32_t kRedZone = 128;
+// MXCSR the callback runs with: the power-on default (round to nearest, all exceptions masked, no
+// FTZ/DAZ), not whatever the guest had set.
+constexpr std::uint32_t kHostMxcsr = 0x1F80;
+// The bits of MXCSR a CPU with AVX accepts in LDMXCSR (MXCSR_MASK is 0xFFFF there); bits 31:16 are
+// reserved and raise #GP when set.
+constexpr std::uint32_t kMxcsrWritableBits = 0xFFFF;
 } // namespace
 
 std::expected<DetourCode, std::string> BuildDetour(const DetourRequest& req,
@@ -47,6 +53,7 @@ std::expected<DetourCode, std::string> BuildDetour(const DetourRequest& req,
     try {
         Xbyak::CodeGenerator gen(capacity, trampoline);
         const auto q = [&](std::size_t field) { return qword[rsp + at(field)]; };
+        Xbyak::Label skip, ret_path, host_mxcsr;
 
         // Entry: rsp = guest rsp (R). Skip the red zone, save rax and flags, build the context.
         gen.lea(rsp, ptr[rsp - kRedZone]);
@@ -79,9 +86,14 @@ std::expected<DetourCode, std::string> BuildDetour(const DetourRequest& req,
         gen.mov(q(offsetof(HookContext, site)), rbx);
         gen.stmxcsr(dword[rsp + at(offsetof(HookContext, mxcsr))]);
         gen.mov(dword[rsp + at(offsetof(HookContext, action))], 0);
+        gen.mov(q(offsetof(HookContext, reserved)), 0);
         for (int i = 0; i < 16; ++i) {
             gen.vmovdqa(yword[rsp + at(offsetof(HookContext, ymm) + i * 32)], Xbyak::Ymm(i));
         }
+
+        // The guest's MXCSR is saved in the context; the callback runs with the default one.
+        // The x87 control word and stack are not touched.
+        gen.ldmxcsr(ptr[rip + host_mxcsr]);
 
         // Host callback, SysV ABI: rdi = ctx, rsi = user. rbx is callee-saved in SysV.
         gen.mov(rbx, rsp);
@@ -96,6 +108,8 @@ std::expected<DetourCode, std::string> BuildDetour(const DetourRequest& req,
         for (int i = 0; i < 16; ++i) {
             gen.vmovdqa(Xbyak::Ymm(i), yword[rsp + at(offsetof(HookContext, ymm) + i * 32)]);
         }
+        // The callback may have written anything to the context's MXCSR; reserved bits would fault.
+        gen.and_(dword[rsp + at(offsetof(HookContext, mxcsr))], kMxcsrWritableBits);
         gen.ldmxcsr(dword[rsp + at(offsetof(HookContext, mxcsr))]);
 
         const auto restore = [&] {
@@ -119,7 +133,6 @@ std::expected<DetourCode, std::string> BuildDetour(const DetourRequest& req,
             gen.mov(rsp, q(offsetof(HookContext, rsp)));
         };
 
-        Xbyak::Label skip, ret_path;
         gen.mov(eax, dword[rsp + at(offsetof(HookContext, action))]);
         gen.cmp(eax, static_cast<std::uint32_t>(HookAction::SkipStolen));
         gen.je(skip, Xbyak::CodeGenerator::T_NEAR);
@@ -142,6 +155,10 @@ std::expected<DetourCode, std::string> BuildDetour(const DetourRequest& req,
         gen.L(ret_path);
         restore();
         gen.ret();
+
+        // Data, after the last instruction: it is only ever read.
+        gen.L(host_mxcsr);
+        gen.dd(kHostMxcsr);
 
         DetourCode code{};
         code.trampoline_size = gen.getSize();

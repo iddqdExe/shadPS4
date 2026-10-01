@@ -102,6 +102,9 @@ struct Probe {
     HookAction initial_action = HookAction::ReturnFromFunction;
     std::uint64_t gpr[15] = {};
     std::uint8_t ymm1[32] = {};
+    std::uint32_t host_mxcsr = 0;
+    std::uint64_t reserved_seen[2] = {~0ull, ~0ull};
+    int ymm_mismatches = 0;
 };
 
 /// Every general register of the context but rsp, in the order of the tests' register tables.
@@ -206,6 +209,47 @@ void BBCOOP_SYSV_ABI EditYmm1(HookContext* ctx, void* user) {
     std::memcpy(p->ymm1, ctx->ymm[1].data(), 32);
     ctx->ymm[1][0] = 0x55;
     ctx->ymm[1][31] = 0x77;
+}
+
+/// Byte `byte` of the pattern the tests load into ymm`reg`: every register differs from the others.
+std::uint8_t YmmPattern(int reg, int byte) {
+    return static_cast<std::uint8_t>(reg * 37 + byte * 11 + 5);
+}
+
+void BBCOOP_SYSV_ABI RecordHostMxcsr(HookContext* ctx, void* user) {
+    auto* p = static_cast<Probe*>(user);
+    p->host_mxcsr = _mm_getcsr();
+    p->mxcsr = ctx->mxcsr;
+}
+
+void BBCOOP_SYSV_ABI WriteReservedMxcsrBits(HookContext* ctx, void*) {
+    ctx->mxcsr = (ctx->mxcsr ^ 0x2000) | 0xFFFF0000u;
+}
+
+void BBCOOP_SYSV_ABI WriteSite(HookContext* ctx, void*) {
+    ctx->site = 0x1234;
+}
+
+void BBCOOP_SYSV_ABI SetActionFromUser(HookContext* ctx, void* user) {
+    ctx->action = static_cast<HookAction>(reinterpret_cast<std::uintptr_t>(user));
+}
+
+void BBCOOP_SYSV_ABI MarkReserved(HookContext* ctx, void* user) {
+    auto* p = static_cast<Probe*>(user);
+    p->reserved_seen[p->calls++ % 2] = ctx->reserved;
+    ctx->reserved = ~0ull;
+}
+
+void BBCOOP_SYSV_ABI CheckAndEditAllYmm(HookContext* ctx, void* user) {
+    auto* p = static_cast<Probe*>(user);
+    for (int reg = 0; reg < 16; ++reg) {
+        for (int byte = 0; byte < 32; ++byte) {
+            if (ctx->ymm[reg][byte] != YmmPattern(reg, byte)) {
+                ++p->ymm_mismatches;
+            }
+        }
+        ctx->ymm[reg][(reg * 7) % 32] ^= 0xFF; // low and high halves are both hit
+    }
 }
 
 /// Restores the thread's MXCSR when a test that changes it ends.
@@ -314,7 +358,10 @@ TEST_F(DetourTest, RejectsStolenBytesThatSplitAnInstruction) {
     // mov rax,[rip+0x10] cut after 5 of its 7 bytes.
     Emit(a.Code(), {0x48, 0x8B, 0x05, 0x10, 0x00, 0x00, 0x00});
     const auto code = Build(a, Steal(a.Code(), 5, CountCalls));
-    EXPECT_FALSE(code.has_value());
+    ASSERT_FALSE(code.has_value());
+    // The relocator's decode failure, not some other rejection.
+    EXPECT_NE(code.error().find("cannot decode instruction at +0x0"), std::string::npos)
+        << code.error();
 }
 
 TEST_F(DetourTest, RejectsInstructionsTheRelocatorRefuses) {
@@ -441,9 +488,19 @@ TEST_F(DetourTest, SavesAndRestoresEveryGeneralRegister) {
 TEST_F(DetourTest, LeavesTheRedZoneAlone) {
     using namespace Xbyak::util;
     constexpr std::uint64_t kBase = 0x7777'0000'0000'0000ull;
-    std::uint64_t* const seen = reinterpret_cast<std::uint64_t*>(a.Data());
+    constexpr std::size_t kStackSize = 0x1000;
+    constexpr std::size_t kAbove = 64; // bytes above the guest's rsp, which must stay untouched
+    // The guest runs on a private stack inside the arena, so what it keeps below its rsp does
+    // not depend on the thread's real stack (the Windows x64 ABI has no red zone there).
+    std::uint8_t* const stack = a.Data() + 0x2000;
+    std::uint8_t* const top = stack + kStackSize - kAbove; // the guest's rsp at the site
+    std::memset(stack, 0xCD, kStackSize);
+    std::uint64_t* const saved_rsp = reinterpret_cast<std::uint64_t*>(a.Data());
+    std::uint64_t* const seen = saved_rsp + 1;
 
     Xbyak::CodeGenerator g(0x1000, a.Code());
+    g.mov(qword[rip + saved_rsp], rsp);
+    g.lea(rsp, ptr[rip + top]);
     for (int i = 1; i <= 16; ++i) {
         g.mov(rax, kBase + i);
         g.mov(qword[rsp - 8 * i], rax);
@@ -454,12 +511,22 @@ TEST_F(DetourTest, LeavesTheRedZoneAlone) {
         g.mov(rax, qword[rsp - 8 * i]);
         g.mov(qword[rip + &seen[i - 1]], rax);
     }
+    g.mov(rsp, qword[rip + saved_rsp]);
     g.ret();
 
     ASSERT_NO_FATAL_FAILURE(Hook(a, const_cast<std::uint8_t*>(site), ScribbleOnStack, nullptr));
     reinterpret_cast<VoidFn>(a.Code())();
     for (int i = 1; i <= 16; ++i) {
         EXPECT_EQ(seen[i - 1], kBase + i) << "[rsp-" << 8 * i << "]";
+    }
+    for (std::size_t i = 0; i < kAbove; ++i) {
+        ASSERT_EQ(top[i], 0xCD) << "the byte at rsp+" << i << " was written";
+    }
+    // The detour (context, callback frame) stays within the stack it was given: the lowest part
+    // of the private stack is still the sentinel.
+    for (std::size_t i = 0; i < 256; ++i) {
+        ASSERT_EQ(stack[i], 0xCD) << "the detour reached " << kStackSize - kAbove - i
+                                  << " bytes below the guest's rsp";
     }
 }
 
@@ -587,4 +654,129 @@ TEST_F(DetourTest, RunsRelocatedConditionalJumpWithTheFlagsOfTheStolenCompare) {
     EXPECT_EQ(reinterpret_cast<Fn>(a.Code())(0), 11u);
     EXPECT_EQ(reinterpret_cast<Fn>(a.Code())(1), 22u);
     EXPECT_EQ(reinterpret_cast<Fn>(a.Code())(6), 11u); // the callback zeroed rcx before the compare
+}
+
+TEST_F(DetourTest, RunsTheCallbackUnderTheDefaultMxcsrAndRestoresTheGuestOne) {
+    using namespace Xbyak::util;
+    // Round toward zero, flush to zero, denormals are zero, all exceptions masked.
+    constexpr std::uint32_t kGuestMxcsr = 0xFFC0;
+    constexpr std::uint32_t kDefaultMxcsr = 0x1F80;
+    const MxcsrGuard guard;
+    auto* const slots = reinterpret_cast<std::uint32_t*>(a.Data());
+    slots[0] = kGuestMxcsr;
+    slots[1] = guard.Saved(); // the host's own value, put back before the guest returns
+    std::uint32_t* const seen_after = &slots[2];
+
+    Xbyak::CodeGenerator g(0x1000, a.Code());
+    g.ldmxcsr(dword[rip + &slots[0]]);
+    const std::uint8_t* const site = g.getCurr();
+    g.nop(5);
+    g.stmxcsr(dword[rip + seen_after]);
+    g.ldmxcsr(dword[rip + &slots[1]]);
+    g.ret();
+
+    Probe probe;
+    ASSERT_NO_FATAL_FAILURE(Hook(a, const_cast<std::uint8_t*>(site), RecordHostMxcsr, &probe));
+    reinterpret_cast<VoidFn>(a.Code())();
+    EXPECT_EQ(probe.host_mxcsr, kDefaultMxcsr) << "the callback ran under the guest's MXCSR";
+    EXPECT_EQ(probe.mxcsr, kGuestMxcsr) << "the context holds the guest's MXCSR";
+    EXPECT_EQ(*seen_after, kGuestMxcsr) << "the guest's MXCSR is restored";
+}
+
+TEST_F(DetourTest, ClearsReservedMxcsrBitsTheCallbackSets) {
+    using namespace Xbyak::util;
+    // A callback that leaves bits 31:16 set in the context must not make LDMXCSR fault (#GP):
+    // the trampoline masks them.
+    const MxcsrGuard guard;
+    auto* const slots = reinterpret_cast<std::uint32_t*>(a.Data());
+    slots[0] = guard.Saved();
+    std::uint32_t* const seen_after = &slots[1];
+
+    Xbyak::CodeGenerator g(0x1000, a.Code());
+    const std::uint8_t* const site = g.getCurr();
+    g.nop(5);
+    g.stmxcsr(dword[rip + seen_after]);
+    g.ldmxcsr(dword[rip + &slots[0]]);
+    g.ret();
+
+    ASSERT_NO_FATAL_FAILURE(
+        Hook(a, const_cast<std::uint8_t*>(site), WriteReservedMxcsrBits, nullptr));
+    reinterpret_cast<VoidFn>(a.Code())();
+    EXPECT_EQ(*seen_after, (guard.Saved() ^ 0x2000u) & 0xFFFFu);
+}
+
+TEST_F(DetourTest, ReservedIsZeroOnEveryEntry) {
+    // mov rax,rcx; add rax,100; ret
+    Emit(a.Code(), {0x48, 0x89, 0xC8, 0x48, 0x83, 0xC0, 0x64, 0xC3});
+    Probe probe;
+    ASSERT_NO_FATAL_FAILURE(Hook(a, a.Code(), MarkReserved, &probe));
+    // Back to back, so the second context lands on the bytes of the first, where the callback
+    // left a non-zero value.
+    reinterpret_cast<Fn>(a.Code())(1);
+    reinterpret_cast<Fn>(a.Code())(2);
+    EXPECT_EQ(probe.reserved_seen[0], 0u);
+    EXPECT_EQ(probe.reserved_seen[1], 0u);
+}
+
+TEST_F(DetourTest, UndefinedActionValuesBehaveAsContinue) {
+    for (const std::uint32_t value : {3u, 7u, 0x80000000u, 0xFFFFFFFFu}) {
+        SCOPED_TRACE(value);
+        // mov rax,rcx; add rax,100; ret
+        Emit(a.Code(), {0x48, 0x89, 0xC8, 0x48, 0x83, 0xC0, 0x64, 0xC3});
+        ASSERT_NO_FATAL_FAILURE(Hook(a, a.Code(), SetActionFromUser,
+                                     reinterpret_cast<void*>(static_cast<std::uintptr_t>(value))));
+        EXPECT_EQ(reinterpret_cast<Fn>(a.Code())(1), 101u) << "the stolen instructions did not run";
+    }
+}
+
+TEST_F(DetourTest, WritingSiteHasNoEffect) {
+    // lea rax,[rcx+1]; add rax,2; ret
+    Emit(a.Code(), {0x48, 0x8D, 0x41, 0x01, 0x48, 0x83, 0xC0, 0x02, 0xC3});
+    ASSERT_NO_FATAL_FAILURE(Hook(a, a.Code(), WriteSite, nullptr));
+    EXPECT_EQ(reinterpret_cast<Fn>(a.Code())(5), 8u);
+}
+
+TEST_F(DetourTest, SavesAndRestoresAllSixteenYmmRegisters) {
+    using namespace Xbyak::util;
+    std::uint8_t* const in = a.Data();
+    std::uint8_t* const out = a.Data() + 0x400;
+    std::uint8_t* const spill = a.Data() + 0x800; // xmm6-15: nonvolatile for the Windows caller
+    for (int reg = 0; reg < 16; ++reg) {
+        for (int byte = 0; byte < 32; ++byte) {
+            in[reg * 32 + byte] = YmmPattern(reg, byte);
+        }
+    }
+
+    Xbyak::CodeGenerator g(0x1000, a.Code());
+    for (int reg = 6; reg < 16; ++reg) {
+        g.vmovdqu(ptr[rip + (spill + 16 * (reg - 6))], Xbyak::Xmm(reg));
+    }
+    for (int reg = 0; reg < 16; ++reg) {
+        g.vmovdqu(Xbyak::Ymm(reg), ptr[rip + (in + 32 * reg)]);
+    }
+    const std::uint8_t* const site = g.getCurr();
+    g.nop(5);
+    for (int reg = 0; reg < 16; ++reg) {
+        g.vmovdqu(ptr[rip + (out + 32 * reg)], Xbyak::Ymm(reg));
+    }
+    for (int reg = 6; reg < 16; ++reg) {
+        g.vmovdqu(Xbyak::Xmm(reg), ptr[rip + (spill + 16 * (reg - 6))]);
+    }
+    g.vzeroupper();
+    g.ret();
+
+    Probe probe;
+    ASSERT_NO_FATAL_FAILURE(Hook(a, const_cast<std::uint8_t*>(site), CheckAndEditAllYmm, &probe));
+    reinterpret_cast<VoidFn>(a.Code())();
+    EXPECT_EQ(probe.ymm_mismatches, 0) << "the callback saw a wrong ymm value";
+    for (int reg = 0; reg < 16; ++reg) {
+        SCOPED_TRACE(reg);
+        std::uint8_t expected[32];
+        for (int byte = 0; byte < 32; ++byte) {
+            expected[byte] = YmmPattern(reg, byte);
+        }
+        expected[(reg * 7) % 32] ^= 0xFF;
+        EXPECT_EQ(std::memcmp(out + 32 * reg, expected, 32), 0)
+            << "the guest saw a wrong ymm value";
+    }
 }

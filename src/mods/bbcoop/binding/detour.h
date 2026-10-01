@@ -31,13 +31,26 @@ enum class HookAction : std::uint32_t {
 /// passes it to the callback and restores every register, RFLAGS, MXCSR and YMM0-15 from it
 /// afterwards, so a callback changes guest state by writing here.
 ///
-/// rsp is the guest stack pointer at the site. The trampoline works below rsp - 128 (the System V
-/// red zone is left alone) and a changed rsp takes effect when the guest code resumes.
+/// Contract of the fields:
+///  - rsp is the guest stack pointer at the site. The trampoline works below rsp - 128 (the System
+///    V red zone is left alone) and a changed rsp takes effect when the guest code resumes.
+///  - rflags: change only the status flags (CF, PF, AF, ZF, SF, OF) and DF. Other bits go to POPFQ
+///    as written, with whatever effect the CPU gives them (TF, for one, traps the guest).
+///  - site is information only. Writing it has no effect: there is no redirection of rip.
+///  - mxcsr is the guest's MXCSR. The callback itself runs with the default value 0x1F80 (round to
+///    nearest, all exceptions masked, FTZ/DAZ off), so host code in it is not subject to the
+///    guest's rounding mode. Bits 31:16 are reserved: the trampoline clears them before it loads
+///    the value back, so a stray write cannot fault, but it should not set them. The x87 control
+///    word and stack are not part of the context; a callback runs with the guest's x87 state and
+///    must leave the x87 stack as it found it.
+///  - action starts as Continue. Any value other than the HookAction enumerators behaves as
+///    Continue.
+///  - reserved is zero on entry, and writes to it are ignored.
 struct alignas(32) HookContext {
     std::uint64_t rax, rbx, rcx, rdx, rsi, rdi, rbp, rsp;
     std::uint64_t r8, r9, r10, r11, r12, r13, r14, r15;
     std::uint64_t rflags;
-    std::uint64_t site; ///< Address of the hooked instruction.
+    std::uint64_t site; ///< Address of the hooked instruction; read-only in effect.
     std::uint32_t mxcsr;
     HookAction action; ///< Set to Continue before the callback runs; the last request wins.
     std::uint64_t reserved;
