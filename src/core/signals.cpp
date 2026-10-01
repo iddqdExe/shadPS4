@@ -15,6 +15,8 @@
 #ifdef _WIN32
 #include <windows.h>
 static constexpr DWORD MS_VC_EXCEPTION = 0x406D1388;
+// A C++ throw (MSVC ABI, also used by clang-cl). It is dispatched to the frames' catch handlers.
+static constexpr DWORD MSVC_CPP_EXCEPTION = 0xE06D7363;
 #else
 #include <csignal>
 #include <pthread.h>
@@ -123,6 +125,10 @@ static LONG WINAPI SignalHandler(EXCEPTION_POINTERS* pExp) noexcept {
     case MS_VC_EXCEPTION:
         LOG_DEBUG(Debug, "Pass MS_VC_EXCEPTION at {} to handler", address);
         return EXCEPTION_EXECUTE_HANDLER;
+    case MSVC_CPP_EXCEPTION:
+        // Not an emulator fault: host code throws and catches C++ exceptions. Leave it to the
+        // catch handlers without logging it or shutting the emulator down.
+        return EXCEPTION_CONTINUE_SEARCH;
     default:
         break;
     }
