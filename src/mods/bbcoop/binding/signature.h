@@ -42,7 +42,7 @@ public:
     std::string ToString() const;
 
 private:
-    Signature() = default; ///< Only Parse builds one, so an empty pattern cannot exist.
+    Signature() = default; ///< Only Parse uses it: code outside cannot construct an empty pattern.
 
     std::vector<std::uint8_t> bytes_;
     std::vector<bool> literal_;

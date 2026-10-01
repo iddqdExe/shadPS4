@@ -45,6 +45,7 @@ struct Fixture {
     }
 };
 const std::string_view kGroupA[] = {"a"};
+const std::string_view kGroupsAB[] = {"a", "b"};
 } // namespace
 
 TEST(PatchTableTest, PlansEnabledPatch) {
@@ -145,18 +146,20 @@ TEST(PatchTableTest, ModifiedSiteInDisabledGroupIsOnlyAWarning) {
     EXPECT_NE(plan.warnings[0].detail.find("modified by another patcher"), std::string::npos);
 }
 
-TEST(PatchTableTest, OneBadPatchDoesNotHideTheGoodOnes) {
+TEST(PatchTableTest, OneBadPatchDoesNotHideTheOthersButNothingIsPlanned) {
     Fixture f;
     const PatchSpec specs[] = {
         {"good", "a", "patch_a", "74 0D", "EB 0D", false},
-        {"bad", "a", "patch_missing", "74 0D", "EB 0D", false},
+        {"bad1", "a", "patch_missing", "74 0D", "EB 0D", false},
+        {"bad2", "a", "patch_b", "35 01", "31 C0", false},
     };
     const auto plan = f.Plan(specs, kGroupA);
     EXPECT_FALSE(plan.Ok());
-    ASSERT_EQ(plan.errors.size(), 1u);
-    EXPECT_EQ(plan.errors[0].name, "bad");
-    ASSERT_EQ(plan.ops.size(), 1u);
-    EXPECT_EQ(plan.ops[0].name, "good");
+    // Every bad spec is still reported, and the good one is not planned on its own.
+    ASSERT_EQ(plan.errors.size(), 2u);
+    EXPECT_EQ(plan.errors[0].name, "bad1");
+    EXPECT_EQ(plan.errors[1].name, "bad2");
+    EXPECT_TRUE(plan.ops.empty());
 }
 
 TEST(PatchTableTest, RejectsPatchOutsideText) {
@@ -224,4 +227,138 @@ TEST(PatchTableTest, ParseHexBytesRejectsEmptyAndBadTokens) {
     EXPECT_FALSE(ParseHexBytes("EB ZZ").has_value());
     EXPECT_FALSE(ParseHexBytes("EB 0").has_value());
     EXPECT_FALSE(ParseHexBytes("EB 0D1").has_value());
+}
+
+TEST(PatchTableTest, PlannedOpCarriesNameAndBytes) {
+    Fixture f;
+    const PatchSpec specs[] = {{"jump", "a", "patch_a", "74 0D", "EB 0D", false}};
+    const auto plan = f.Plan(specs, kGroupA);
+    ASSERT_EQ(plan.ops.size(), 1u);
+    EXPECT_EQ(plan.ops[0].name, "jump");
+    EXPECT_EQ(plan.ops[0].original, (std::vector<std::uint8_t>{0x74, 0x0D}));
+    EXPECT_EQ(plan.ops[0].replacement, (std::vector<std::uint8_t>{0xEB, 0x0D}));
+}
+
+TEST(PatchTableTest, PositionDependentRejectionExplainsWhy) {
+    Fixture f;
+    const PatchSpec specs[] = {{"call", "a", "patch_a", "74 0D", "EB 0D", true}};
+    const auto plan = f.Plan(specs, kGroupA, false);
+    ASSERT_EQ(plan.errors.size(), 1u);
+    EXPECT_EQ(plan.errors[0].name, "call");
+    EXPECT_EQ(plan.errors[0].detail, "position-dependent patch requires the reference image");
+    EXPECT_TRUE(plan.ops.empty());
+}
+
+TEST(PatchTableTest, AcceptsPatchEndingExactlyAtEndOfText) {
+    Fixture f;
+    f.symbols["last_two"] = kTextRva + 0x3E; // bytes 0x3E and 0x3F, the last two of the text
+    f.symbols["last_one"] = kTextRva + 0x3F;
+    const PatchSpec specs[] = {{"two", "a", "last_two", "90 90", "CC CC", false}};
+    const auto plan = f.Plan(specs, kGroupA);
+    ASSERT_TRUE(plan.Ok());
+    ASSERT_EQ(plan.ops.size(), 1u);
+    EXPECT_EQ(plan.ops[0].rva, kTextRva + 0x3E);
+    const PatchSpec one[] = {{"one", "a", "last_one", "90", "CC", false}};
+    EXPECT_TRUE(f.Plan(one, kGroupA).Ok());
+}
+
+TEST(PatchTableTest, ParseFailureNamesTheBadField) {
+    Fixture f;
+    const PatchSpec specs[] = {
+        {"bad_original", "a", "patch_a", "74 ZZ", "EB 0D", false},
+        {"bad_replacement", "a", "patch_a", "74 0D", "EB ZZ", false},
+        {"wild_replacement", "a", "patch_a", "74 0D", "EB ??", false},
+    };
+    const auto plan = f.Plan(specs, kGroupA);
+    ASSERT_EQ(plan.errors.size(), 3u);
+    EXPECT_EQ(plan.errors[0].detail.rfind("original: ", 0), 0u) << plan.errors[0].detail;
+    EXPECT_EQ(plan.errors[1].detail.rfind("replacement: ", 0), 0u) << plan.errors[1].detail;
+    EXPECT_EQ(plan.errors[2].detail,
+              "replacement: wildcards are not allowed in patch bytes");
+}
+
+TEST(PatchTableTest, ParseHexBytesRejectsInputMadeOnlyOfWildcards) {
+    constexpr std::string_view kMessage = "wildcards are not allowed in patch bytes";
+    for (const std::string_view text : {"??", "?", "?? ??", " ? ?? "}) {
+        const auto bytes = ParseHexBytes(text);
+        ASSERT_FALSE(bytes.has_value()) << text;
+        EXPECT_EQ(bytes.error(), kMessage) << text;
+    }
+}
+
+TEST(PatchTableTest, TwoEnabledPatchesOnTheSameSiteAreAConflict) {
+    Fixture f;
+    const PatchSpec specs[] = {
+        {"first", "a", "patch_a", "74 0D", "EB 0D", false},
+        {"second", "b", "patch_a", "74 0D", "90 90", false},
+    };
+    const auto plan = f.Plan(specs, kGroupsAB);
+    EXPECT_FALSE(plan.Ok());
+    ASSERT_EQ(plan.errors.size(), 1u);
+    EXPECT_EQ(plan.errors[0].name, "second");
+    EXPECT_NE(plan.errors[0].detail.find("first"), std::string::npos) << plan.errors[0].detail;
+    EXPECT_TRUE(plan.ops.empty());
+}
+
+TEST(PatchTableTest, PartiallyOverlappingEnabledPatchesAreAConflict) {
+    Fixture f;
+    f.symbols["s30"] = kTextRva + 0x30;
+    f.symbols["s32"] = kTextRva + 0x32;
+    // Listed in reverse address order: the check must not depend on the table order.
+    const PatchSpec specs[] = {
+        {"late", "a", "s32", "90 90", "CC CC", false},         // 0x32..0x33
+        {"early", "a", "s30", "90 90 90", "CC CC CC", false}, // 0x30..0x32
+    };
+    const auto plan = f.Plan(specs, kGroupA);
+    EXPECT_FALSE(plan.Ok());
+    ASSERT_EQ(plan.errors.size(), 1u);
+    EXPECT_EQ(plan.errors[0].name, "late");
+    EXPECT_NE(plan.errors[0].detail.find("early"), std::string::npos) << plan.errors[0].detail;
+    EXPECT_TRUE(plan.ops.empty());
+}
+
+TEST(PatchTableTest, AdjacentEnabledPatchesAreNotAConflict) {
+    Fixture f;
+    f.symbols["s30"] = kTextRva + 0x30;
+    f.symbols["s32"] = kTextRva + 0x32;
+    const PatchSpec specs[] = {
+        {"left", "a", "s30", "90 90", "CC CC", false},  // 0x30..0x31
+        {"right", "a", "s32", "90 90", "CC CC", false}, // 0x32..0x33
+    };
+    const auto plan = f.Plan(specs, kGroupA);
+    EXPECT_TRUE(plan.Ok());
+    EXPECT_EQ(plan.ops.size(), 2u);
+}
+
+TEST(PatchTableTest, OverlapWithADisabledGroupIsIgnored) {
+    Fixture f;
+    const PatchSpec specs[] = {
+        {"enabled", "a", "patch_a", "74 0D", "EB 0D", false},
+        {"disabled", "b", "patch_a", "74 0D", "90 90", false},
+    };
+    const auto plan = f.Plan(specs, kGroupA);
+    EXPECT_TRUE(plan.Ok());
+    EXPECT_TRUE(plan.warnings.empty());
+    ASSERT_EQ(plan.ops.size(), 1u);
+    EXPECT_EQ(plan.ops[0].name, "enabled");
+}
+
+TEST(PatchTableTest, EveryPatchInsideALongerOneIsReported) {
+    Fixture f;
+    f.symbols["s30"] = kTextRva + 0x30;
+    f.symbols["s31"] = kTextRva + 0x31;
+    f.symbols["s32"] = kTextRva + 0x32;
+    // "inner1" and "inner2" do not touch each other, but both lie inside "outer".
+    const PatchSpec specs[] = {
+        {"outer", "a", "s30", "90 90 90 90", "CC CC CC CC", false},
+        {"inner1", "a", "s31", "90", "CC", false},
+        {"inner2", "a", "s32", "90", "CC", false},
+    };
+    const auto plan = f.Plan(specs, kGroupA);
+    ASSERT_EQ(plan.errors.size(), 2u);
+    EXPECT_EQ(plan.errors[0].name, "inner1");
+    EXPECT_EQ(plan.errors[1].name, "inner2");
+    for (const auto& error : plan.errors) {
+        EXPECT_NE(error.detail.find("outer"), std::string::npos) << error.detail;
+    }
 }

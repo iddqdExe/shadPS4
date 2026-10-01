@@ -5,19 +5,57 @@
 
 #include <algorithm>
 #include <format>
+#include <numeric>
 #include <utility>
 
 #include "bbcoop/binding/signature.h"
 
 namespace BBCoop::Binding {
 
+namespace {
+constexpr std::string_view kWildcardError = "wildcards are not allowed in patch bytes";
+
+// Reports every enabled op that starts inside an earlier one (same site or partial overlap). The
+// ops are walked in address order against the op that reaches furthest so far, so a long patch
+// covering several short ones is reported against each of them. Differences are taken between
+// addresses of ops that already passed the bounds check, so nothing here can wrap around.
+void ReportOverlaps(PatchPlan& plan) {
+    std::vector<std::size_t> order(plan.ops.size());
+    std::iota(order.begin(), order.end(), std::size_t{0});
+    std::stable_sort(order.begin(), order.end(), [&](std::size_t a, std::size_t b) {
+        return plan.ops[a].rva < plan.ops[b].rva;
+    });
+    const PatchOp* reach = nullptr;
+    for (const std::size_t i : order) {
+        const PatchOp& op = plan.ops[i];
+        if (reach == nullptr) {
+            reach = &op;
+            continue;
+        }
+        const std::uint64_t gap = op.rva - reach->rva;
+        if (gap < reach->original.size()) {
+            plan.errors.push_back(
+                {op.name, std::format("patch at {:#x} overlaps patch {} at {:#x}", op.rva,
+                                      reach->name, reach->rva)});
+        }
+        if (gap + op.original.size() > reach->original.size()) {
+            reach = &op;
+        }
+    }
+}
+} // namespace
+
 std::expected<std::vector<std::uint8_t>, std::string> ParseHexBytes(std::string_view text) {
     const auto sig = Signature::Parse(text);
     if (!sig) {
+        // An all-wildcard string fails Parse for lack of a literal byte; report the real problem.
+        if (text.find('?') != std::string_view::npos) {
+            return std::unexpected(std::string{kWildcardError});
+        }
         return std::unexpected(sig.error());
     }
     if (sig->HasWildcards()) {
-        return std::unexpected(std::string{"wildcards are not allowed in patch bytes"});
+        return std::unexpected(std::string{kWildcardError});
     }
     const auto bytes = sig->Bytes();
     return std::vector<std::uint8_t>(bytes.begin(), bytes.end());
@@ -35,7 +73,8 @@ PatchPlan PlanPatches(const PatchPlanInput& in) {
         const auto original = ParseHexBytes(spec.original);
         const auto replacement = ParseHexBytes(spec.replacement);
         if (!original || !replacement) {
-            issue(!original ? original.error() : replacement.error());
+            issue(!original ? std::format("original: {}", original.error())
+                            : std::format("replacement: {}", replacement.error()));
             continue;
         }
         if (original->size() != replacement->size()) {
@@ -71,6 +110,10 @@ PatchPlan PlanPatches(const PatchPlanInput& in) {
         } else if (enabled) {
             plan.ops.push_back({spec.name, *rva, *original, *replacement});
         }
+    }
+    ReportOverlaps(plan);
+    if (!plan.Ok()) {
+        plan.ops.clear(); // N4: a plan with problems installs nothing.
     }
     return plan;
 }
