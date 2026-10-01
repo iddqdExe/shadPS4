@@ -10,6 +10,9 @@ on:
     branches: ["bbcoop/**"]
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 concurrency:
   group: bbcoop-${{ github.ref }}
   cancel-in-progress: true
@@ -17,6 +20,7 @@ concurrency:
 jobs:
   windows:
     runs-on: windows-2025-vs2026
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@v6
         with:
@@ -31,7 +35,7 @@ jobs:
         uses: hendrikmuhs/ccache-action@v1.2.21
         with:
           key: bbcoop-windows-${{ hashFiles('**/CMakeLists.txt', 'cmake/**', 'src/mods/bbcoop/**/*.cmake') }}
-          append-timestamp: false
+          restore-keys: bbcoop-windows-
 
       - name: Configure
         run: >
@@ -44,7 +48,7 @@ jobs:
         run: cmake --build build --parallel $env:NUMBER_OF_PROCESSORS
 
       - name: Unit tests
-        run: ctest --test-dir build -R "^BBCoop\." --output-on-failure
+        run: ctest --test-dir build -R "^BBCoop\." --no-tests=error --output-on-failure
 
       - name: Upload artifact
         uses: actions/upload-artifact@v7
