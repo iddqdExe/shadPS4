@@ -42,12 +42,24 @@ struct ImageView {
     bool is_reference_image;
 };
 
-enum class ResolveError : std::uint8_t { BadPattern, NotFound, Ambiguous, HintMismatch, BadOperand };
+enum class ResolveError : std::uint8_t {
+    BadPattern,   ///< The pattern text does not parse.
+    NotFound,     ///< Scan mode: no match.
+    Ambiguous,    ///< Scan mode: more than one match.
+    HintMismatch, ///< Reference mode: no match at match_rva, or the result differs from target_rva.
+    BadOperand,   ///< RelativeOperand: the instruction is outside the text, cut off, undecodable, or
+                  ///< has no RIP-relative / relative operand.
+    OutOfText,    ///< Match mode: match + operand_offset lies outside the executable segment.
+    ZeroRva,      ///< The result is RVA 0, which is never a valid symbol.
+};
 
 struct ResolveFailure {
+    /// Borrows SymbolSpec::name: the specs' strings must outlive the ResolveResult.
     std::string_view name;
     bool required;
     ResolveError error;
+    /// Scan mode: how many matches the scan saw, capped at 2 (it stops at the second), so 2 means
+    /// "two or more"; failures after a unique match report 1. Reference mode: always 0, no scan runs.
     std::size_t match_count;
     std::string detail;
 };
@@ -56,6 +68,7 @@ struct ResolveResult {
     /// Parallel to the specs. 0 means unresolved: RVA 0 is never a valid symbol (on the EU 1.09
     /// image the executable segment starts at vaddr 0 and offset 0 is the INTERP string), so
     /// consumers must read results through Rva() instead of treating this value as an address.
+    /// ResolveSymbols enforces this: a result of 0 is reported as a ZeroRva failure.
     std::vector<std::uint64_t> rvas;
     std::vector<ResolveFailure> failures;
 
@@ -68,6 +81,7 @@ struct ResolveResult {
     }
     /// False when any required symbol failed.
     bool AllRequiredResolved() const;
+    /// Number of specs that resolved to a non-zero RVA.
     std::size_t ResolvedCount() const;
 };
 
