@@ -254,6 +254,38 @@ TEST(RelocatorTest, RejectsSegmentAccessAfterPlainInstructions) {
     EXPECT_NE(out.error().find("0x1001"), std::string::npos) << out.error();
 }
 
+TEST(RelocatorTest, RejectsFsGsSegmentOnImplicitOperands) {
+    // String operations and XLAT address memory through operands the instruction does not spell
+    // out, and an FS/GS prefix still redirects them.
+    struct Case {
+        const char* name;
+        std::vector<std::uint8_t> code;
+    };
+    const Case cases[] = {
+        {"movsb with FS", {0x64, 0xA4}},
+        {"rep movsq with FS", {0xF3, 0x64, 0x48, 0xA5}},
+        {"cmpsb with GS", {0x65, 0xA6}},
+        {"lodsb with FS", {0x64, 0xAC}},
+        {"xlat with FS", {0x64, 0xD7}},
+        {"xlat with GS", {0x65, 0xD7}},
+    };
+    for (const auto& c : cases) {
+        SCOPED_TRACE(c.name);
+        const auto out = RelocateInstructions(c.code, 0x1000, 0x2000);
+        EXPECT_FALSE(out.has_value());
+        if (!out.has_value()) {
+            EXPECT_NE(out.error().find("FS/GS"), std::string::npos) << out.error();
+        }
+    }
+}
+
+TEST(RelocatorTest, AcceptsStringOperationsAndXlatWithoutSegmentOverride) {
+    const std::vector<std::uint8_t> code{0xA4, 0xF3, 0x48, 0xA5, 0xA6, 0xAC, 0xD7};
+    const auto out = RelocateInstructions(code, 0x1000, 0x2000);
+    ASSERT_TRUE(out.has_value()) << out.error();
+    EXPECT_EQ(*out, code);
+}
+
 TEST(RelocatorTest, RejectsSse4aInstructions) {
     struct Case {
         const char* name;

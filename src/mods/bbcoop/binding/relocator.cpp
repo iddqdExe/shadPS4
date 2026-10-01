@@ -39,7 +39,9 @@ std::optional<std::string_view> UnrelocatableReason(const ZydisDecodedInstructio
     default:
         break;
     }
-    for (std::uint8_t i = 0; i < insn.operand_count_visible; ++i) {
+    // All operands, hidden ones included: string operations and XLAT address memory through
+    // operands they do not spell out, and an FS/GS prefix redirects those too.
+    for (std::uint8_t i = 0; i < insn.operand_count; ++i) {
         if (ops[i].type != ZYDIS_OPERAND_TYPE_MEMORY) {
             continue;
         }

@@ -28,7 +28,9 @@ std::expected<std::size_t, std::string> StealLength(std::span<const std::uint8_t
 ///
 /// Fails, and returns no bytes, for code that cannot be moved into a trampoline:
 ///  - instructions the emulator rewrites lazily in place (FS/GS segment access and the SSE4a
-///    EXTRQ, INSERTQ, MOVNTSS, MOVNTSD), because a trampoline copy would never be rewritten;
+///    EXTRQ, INSERTQ, MOVNTSS, MOVNTSD), because a trampoline copy would never be rewritten.
+///    The segment check covers every operand, hidden ones too: a string operation or XLAT with an
+///    FS/GS prefix is rejected as well;
 ///  - EIP-relative addressing (0x67 prefix), whose 32-bit wrap-around cannot be preserved;
 ///  - a relative branch into the middle of `code`, which the hook's jump will overwrite (a branch
 ///    to its first byte or to the first byte after it is fine);
@@ -36,6 +38,10 @@ std::expected<std::size_t, std::string> StealLength(std::span<const std::uint8_t
 ///    (for example JRCXZ and LOOP, which exist only with an 8-bit displacement, or a RIP-relative
 ///    operand more than 2 GiB away).
 /// Bytes that do not decode as whole instructions are rejected as well.
+///
+/// Not checked: a RIP-relative data reference that points INTO `code` itself. The relocated
+/// instruction keeps the original address, which is overwritten by the hook's jump, so it would
+/// read the jump's bytes. Callers must not steal bytes that the relocated code reads.
 std::expected<std::vector<std::uint8_t>, std::string> RelocateInstructions(
     std::span<const std::uint8_t> code, std::uint64_t source_address, std::uint64_t target_address);
 
