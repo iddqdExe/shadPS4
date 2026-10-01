@@ -74,6 +74,20 @@ std::expected<std::vector<PlannedHook>, std::string> PlanHooks(const HookPlanInp
                 "trap, inside the {} bytes the hook overwrites",
                 name, rva, *transfers->early, *steal));
         }
+        // Several handlers on one site share its detour; they must agree on what the site is.
+        if (const auto same = std::ranges::find(planned, rva, &PlannedHook::rva);
+            same != planned.end()) {
+            const auto& first = input.requests[same->request];
+            if (first.kind != request.kind) {
+                return std::unexpected(std::format(
+                    "hook {} ('{}'): a {} hook cannot share the site at {:#x} with the {} hook "
+                    "of '{}' ({})",
+                    name, request.owner, ToString(request.kind), rva, ToString(first.kind),
+                    first.owner, input.symbols[first.symbol].name));
+            }
+            same->requests.push_back(r);
+            continue;
+        }
         for (const auto& other : planned) {
             if (rva < other.rva + other.stolen.size() && other.rva < rva + *steal) {
                 const auto& other_request = input.requests[other.request];
@@ -92,7 +106,7 @@ std::expected<std::vector<PlannedHook>, std::string> PlanHooks(const HookPlanInp
                             "(an XML patch, the emulator or a BB Co-op byte patch)",
                             name, rva));
         }
-        planned.push_back({r, rva, stolen, transfers->ends_with_transfer});
+        planned.push_back({r, rva, stolen, transfers->ends_with_transfer, {r}});
     }
     return planned;
 }

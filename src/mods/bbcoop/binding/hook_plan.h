@@ -34,26 +34,32 @@ struct HookPlanInput {
     std::uint64_t text_rva;                 ///< RVA of pristine[0] and live[0].
 };
 
-/// One request that passed every check, in request order.
+/// One hooked site (one detour), in the order of the first request on it.
 struct PlannedHook {
-    std::size_t request;
+    std::size_t request; ///< The first request on this site.
     std::uint64_t rva;
     std::span<const std::uint8_t> stolen; ///< The pristine bytes the hook's jump replaces.
     bool ends_with_transfer;              ///< See HookSiteRules::ends_with_transfer.
+    /// Every request on this site, in request order (the first one is `request`). The site's one
+    /// detour runs their handlers in this order (RunSiteHandlers).
+    std::vector<std::size_t> requests;
 };
 
 /// The bytes on each side of the stolen ones that must also be untouched in the live text.
 constexpr std::size_t kHookNeighbourhood = 16;
 
 /// Checks every request and returns where each hook goes, or the first problem (all or nothing:
-/// one bad request fails the plan). A request is refused when
+/// one bad request fails the plan). Requests whose sites resolve to the same address with the
+/// same HookSiteKind share one PlannedHook (one detour, several handlers). A request is refused
+/// when
 ///  - its symbol is unresolved or out of range,
 ///  - its kind does not fit the symbol: FunctionEntry needs a Function, Mid a Function or Site,
 ///  - the site is outside the text, or the stolen bytes (whole instructions covering a JMP rel32)
 ///    do not decode,
 ///  - an unconditional jump, ret or trap comes before the last stolen instruction (the function
 ///    ends inside the region and the jump would overwrite what follows),
-///  - its stolen bytes overlap those of an earlier request,
+///  - an earlier request is on the same site with the other HookSiteKind,
+///  - its stolen bytes overlap those of an earlier request on another site,
 ///  - the live text differs from the pristine text over the stolen bytes or within
 ///    kHookNeighbourhood bytes around them (an XML patch, an emulator patch or one of our own byte
 ///    patches is there).

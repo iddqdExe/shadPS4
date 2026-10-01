@@ -26,6 +26,20 @@ parent repository.
 Rule: files outside `runtime/` must not include emulator headers. `bbcoop_core` only has
 `src/mods` on its include path, so such includes fail to compile.
 
+## Hooks
+
+`runtime/hooks.h`: `RegisterHook(site, kind, owner, handler)` from `BBCoop::Initialize()`, before the
+game is loaded; `InstallHooks` installs all of them or none (N4: any refusal disables the mod).
+
+- **Several hooks on one site.** Registrations on the same site (any owners) with the same
+  `HookSiteKind` share one detour: the handlers run in registration order, each through the guard on
+  its own (a handler that throws or misbehaves is disabled alone; the others keep running and each
+  sees the registers as the earlier ones left them). The first handler that asks for
+  `SkipStolenInstructions` or `ReturnFromFunction` sets the site's action for that hit; a later one
+  may ask for the same action or none, and asking for the other one is that later handler's fault
+  (its changes are undone, it is disabled, the earlier action stays). Different kinds on one site
+  are refused at install (mod off).
+
 ## Game thread
 
 `runtime/game_thread.h` is the one place where mod code touches the game safely: everything that
@@ -37,7 +51,7 @@ from a per-frame tick.
 | `OnEveryFrame(owner, callback)` | Per-frame callback, called with the tick number (from 1) in registration order. Register before the game is loaded (from `BBCoop::Initialize()`). |
 | `PostToGameThread(task)` | Queue work for the next tick from any thread; `false` (check it) when the mod is inactive or 256 tasks are already waiting. Dropped tasks are counted and the total is added to the periodic tick line. |
 | `IsGameThread()` / `FrameCount()` | Thread check and tick counter. `IsGameThread()` is false everywhere until the first tick. |
-| `CallGame<R>(symbol, args...)` | Call a game function by symbol (game thread, after the first tick; System V ABI). Arguments must be integers, enums, pointers or floats; pass `std::uint64_t` / `std::int64_t` explicitly for 64-bit parameters, no bare literals. |
+| `CallGame<R>(symbol, args...)` | Call a game function by symbol (game thread, after the first tick; System V ABI). Arguments must be integers, enums, pointers or floats; pass `std::uint64_t` / `std::int64_t` explicitly for 64-bit parameters, no bare literals. The game function runs with the game's MXCSR (see below). |
 
 **Tick point.** The tick is a hook on `idle_heartbeat_epilogue`, RVA `0x01BFE882`: the
 `add rsp,0x7E8` (7 bytes `48 81 C4 E8 07 00 00`) before the register pops and the `ret` of the
@@ -55,6 +69,14 @@ tables (`Build-SymbolDb`, `Generate-Signatures`, `bbcoop_sigcheck`).
 **Stack budget.** Callbacks and tasks run on the game's stack inside the hook handler: 16 KB at
 most for the callback and everything it calls (a `CallGame` target's own stack use counts too), no
 deep recursion, no large stack buffers (the game's stacks have no guard page).
+
+**MXCSR.** Hook handlers, tasks and callbacks run with the host's default MXCSR `0x1F80` (no
+flush-to-zero), so the mod's own float code is not subject to the game's modes. A game function
+called through `CallGame` runs with the game's MXCSR, as it would natively: the value the game thread
+had at the hooked site (`RunHookHandler` records the context's `mxcsr` for the thread while a handler
+runs; for tasks and callbacks that is the tick's site), or the Orbis default `0x9FC0` (FTZ and DAZ
+on) outside a handler. The previous MXCSR is loaded back right after the call, also when it throws
+(`binding/guest_mxcsr.h`).
 
 **Blocking.** They also run inside the game's frame: anything that blocks (I/O, waiting for another
 thread, a contended lock) stalls the game. Do such work on another thread and post the result back

@@ -156,8 +156,44 @@ TEST_F(HookPlanTest, RefusesOverlappingHooks) {
               "hook nop_b overlaps hook nop_a (owners 'b' and 'a')");
     EXPECT_EQ(ErrorOf(Plan({{NopB, HookSiteKind::Mid, "b"}, {NopA, HookSiteKind::Mid, "a"}})),
               "hook nop_a overlaps hook nop_b (owners 'a' and 'b')");
-    EXPECT_EQ(ErrorOf(Plan({{MidSite, HookSiteKind::Mid, "a"}, {MidSite, HookSiteKind::Mid, "b"}})),
-              "hook mid_site overlaps hook mid_site (owners 'b' and 'a')");
+    // Two hooks on the same site are not an overlap any more (0B-R52): see
+    // TwoHandlersOnOneSiteShareOneDetour.
+}
+
+TEST_F(HookPlanTest, TwoHandlersOnOneSiteShareOneDetour) {
+    const auto plan = Plan({{MidSite, HookSiteKind::Mid, "a"},
+                            {FEntry, HookSiteKind::FunctionEntry, "x"},
+                            {MidSite, HookSiteKind::Mid, "b"}});
+    ASSERT_TRUE(plan.has_value()) << plan.error();
+    ASSERT_EQ(plan->size(), 2u) << "one planned detour per site";
+    EXPECT_EQ((*plan)[0].request, 0u);
+    EXPECT_EQ((*plan)[0].rva, kTextRva + 0x40);
+    EXPECT_EQ((*plan)[0].stolen.size(), 7u);
+    EXPECT_EQ((*plan)[0].requests, (std::vector<std::size_t>{0, 2})) << "registration order";
+    EXPECT_EQ((*plan)[1].request, 1u);
+    EXPECT_EQ((*plan)[1].requests, (std::vector<std::size_t>{1}));
+}
+
+TEST_F(HookPlanTest, TwoSymbolsAtOneAddressShareOneDetour) {
+    // A Function row and a Site row can name the same instruction.
+    symbols.push_back(Spec("mid_alias", SymbolKind::Function));
+    resolved.rvas.push_back(kTextRva + 0x40);
+    const auto plan = Plan({{MidSite, HookSiteKind::Mid, "a"}, {kCount, HookSiteKind::Mid, "b"}});
+    ASSERT_TRUE(plan.has_value()) << plan.error();
+    ASSERT_EQ(plan->size(), 1u);
+    EXPECT_EQ((*plan)[0].requests, (std::vector<std::size_t>{0, 1}));
+}
+
+TEST_F(HookPlanTest, RefusesHooksOfDifferentKindsOnOneSite) {
+    EXPECT_EQ(ErrorOf(Plan(
+                  {{FEntry, HookSiteKind::FunctionEntry, "a"}, {FEntry, HookSiteKind::Mid, "b"}})),
+              "hook f_entry ('b'): a Mid hook cannot share the site at 0x1020 with the "
+              "FunctionEntry hook of 'a' (f_entry)");
+    EXPECT_EQ(ErrorOf(Plan({{FEntry, HookSiteKind::Mid, "a"},
+                            {MidSite, HookSiteKind::Mid, "c"},
+                            {FEntry, HookSiteKind::FunctionEntry, "b"}})),
+              "hook f_entry ('b'): a FunctionEntry hook cannot share the site at 0x1020 with the "
+              "Mid hook of 'a' (f_entry)");
 }
 
 TEST_F(HookPlanTest, AcceptsHooksThatOnlyTouch) {

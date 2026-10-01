@@ -21,14 +21,19 @@
 namespace BBCoop::Runtime {
 
 namespace {
+/// One RegisterHook call.
 struct HookRecord {
     Binding::SymbolId site;
     HookSiteKind kind;
     std::string owner;
-    HookHandler handler;
-    /// Set by InstallHooks before the site is patched.
+    /// The handler, its fault flag and this record as the reporter's user pointer.
+    Binding::SiteHandler handler;
+};
+
+/// One installed detour: the handlers of every record on its site, in registration order.
+struct InstalledSite {
     Binding::HookSiteRules rules;
-    std::atomic<bool> faulted{false};
+    std::vector<Binding::SiteHandler*> handlers;
 };
 
 /// Intentionally leaked: guest threads can still reach a hook site while static destructors run
@@ -38,13 +43,19 @@ std::vector<std::unique_ptr<HookRecord>>& Records() {
     return records;
 }
 
+/// Intentionally leaked, like Records(): the trampolines pass these to HookThunk.
+std::vector<std::unique_ptr<InstalledSite>>& InstalledSites() {
+    static auto& sites = *new std::vector<std::unique_ptr<InstalledSite>>();
+    return sites;
+}
+
 /// Set when InstallHooks runs; a hook registered later would never be installed.
 std::atomic<bool> g_install_ran{false};
 
 /// Runs inside RunHookHandler's stack bounds, so a throw from the logger cannot reach the guest.
+/// RunSiteHandlers marks the handler faulted after this returns.
 void ReportFault(const Binding::HookRunResult& result, void* user) {
     auto* rec = static_cast<HookRecord*>(user);
-    rec->faulted.store(true, std::memory_order_release);
     const auto site = Binding::SymbolName(rec->site);
     switch (result.fault) {
     case Binding::HookFault::Exception:
@@ -67,19 +78,33 @@ void ReportFault(const Binding::HookRunResult& result, void* user) {
                      "the function; handler disabled",
                      rec->owner, site);
         break;
+    case Binding::HookFault::ConflictingAction:
+        LOG_CRITICAL(BBCoop_Binding,
+                     "hook '{}' at {} asked for {} where an earlier handler of the site asked for "
+                     "{} in the same hit; the earlier action stays, handler disabled",
+                     rec->owner, site, Binding::ToString(result.requested),
+                     Binding::ToString(result.earlier));
+        break;
     case Binding::HookFault::None:
         break;
     }
 }
 
-/// The detour callback of every hook. It runs on a guest stack, where nothing may throw outside
+/// The detour callback of every site. It runs on a guest stack, where nothing may throw outside
 /// RunHookHandler (see hook_guard.h), so it only calls functions that cannot throw.
 void BBCOOP_SYSV_ABI HookThunk(Binding::HookContext* ctx, void* user) noexcept {
-    auto* rec = static_cast<HookRecord*>(user);
-    if (rec->faulted.load(std::memory_order_acquire)) {
-        return;
+    const auto* site = static_cast<const InstalledSite*>(user);
+    Binding::RunSiteHandlers(*ctx, site->rules, site->handlers, &ReportFault);
+}
+
+/// "'a'" or "'a', 'b'": the owners of the records on one site, for the log.
+std::string OwnersOf(const Binding::PlannedHook& hook,
+                     const std::vector<std::unique_ptr<HookRecord>>& records) {
+    std::string owners;
+    for (const std::size_t r : hook.requests) {
+        owners += std::format("{}'{}'", owners.empty() ? "" : ", ", records[r]->owner);
     }
-    Binding::RunHookHandler(*ctx, rec->rules, rec->handler, &ReportFault, rec);
+    return owners;
 }
 } // namespace
 
@@ -99,7 +124,8 @@ void RegisterHook(Binding::SymbolId site, HookSiteKind kind, std::string owner,
     rec->site = site;
     rec->kind = kind;
     rec->owner = std::move(owner);
-    rec->handler = std::move(handler);
+    rec->handler.handler = std::move(handler);
+    rec->handler.report_user = rec.get();
     Records().push_back(std::move(rec));
 }
 
@@ -133,9 +159,20 @@ bool InstallHooks(std::uint64_t base, std::span<const std::uint8_t> pristine,
     };
     std::vector<Built> built;
     built.reserve(plan->size());
+    // One detour per site; it runs the handlers of every record on the site (all of one kind,
+    // PlanHooks checked that) in registration order.
+    std::vector<std::unique_ptr<InstalledSite>> sites;
+    sites.reserve(plan->size());
     for (const auto& hook : *plan) {
-        auto& rec = *records[hook.request];
-        const auto name = Binding::SymbolName(rec.site);
+        auto& installed = *sites.emplace_back(std::make_unique<InstalledSite>());
+        installed.rules = {
+            .function_entry = records[hook.request]->kind == HookSiteKind::FunctionEntry,
+            .ends_with_transfer = hook.ends_with_transfer,
+        };
+        for (const std::size_t r : hook.requests) {
+            installed.handlers.push_back(&records[r]->handler);
+        }
+        const auto name = Binding::SymbolName(records[hook.request]->site);
         auto* site = reinterpret_cast<std::uint8_t*>(base + hook.rva);
         auto* tramp = ::Core::ReserveModuleTrampolineSpace(site, Binding::kMaxTrampolineSize);
         if (tramp == nullptr) {
@@ -143,7 +180,7 @@ bool InstallHooks(std::uint64_t base, std::span<const std::uint8_t> pristine,
             return false;
         }
         const auto code = Binding::BuildDetour(
-            {reinterpret_cast<std::uint64_t>(site), hook.stolen, &HookThunk, &rec}, tramp,
+            {reinterpret_cast<std::uint64_t>(site), hook.stolen, &HookThunk, &installed}, tramp,
             Binding::kMaxTrampolineSize);
         if (!code) {
             error = std::format("hook {}: {}", name, code.error());
@@ -152,23 +189,23 @@ bool InstallHooks(std::uint64_t base, std::span<const std::uint8_t> pristine,
         built.push_back({site, code->site_patch, code->site_patch_size});
     }
     // Nothing above wrote outside the reserved trampoline space; an aborted plan leaves only
-    // unreachable trampoline bytes behind. No guest code runs yet, so the records and the sites
-    // are written without synchronization.
-    for (std::size_t i = 0; i < plan->size(); ++i) {
-        const auto& hook = (*plan)[i];
-        records[hook.request]->rules = {
-            .function_entry = records[hook.request]->kind == HookSiteKind::FunctionEntry,
-            .ends_with_transfer = hook.ends_with_transfer,
-        };
-        std::memcpy(built[i].site, built[i].patch.data(), built[i].patch_size);
+    // unreachable trampoline bytes behind (and frees the sites they would have used). No guest
+    // code runs yet, so the sites are written without synchronization.
+    for (auto& installed : sites) {
+        InstalledSites().push_back(std::move(installed));
+    }
+    for (const auto& b : built) {
+        std::memcpy(b.site, b.patch.data(), b.patch_size);
     }
     if (!built.empty()) {
         FlushInstructionCache(GetCurrentProcess(), nullptr, 0);
     }
     for (const auto& hook : *plan) {
-        const auto& rec = *records[hook.request];
-        LOG_INFO(BBCoop_Binding, "hook {} ('{}') installed at rva {:#x}, {} bytes stolen{}",
-                 Binding::SymbolName(rec.site), rec.owner, hook.rva, hook.stolen.size(),
+        LOG_INFO(BBCoop_Binding, "hook {} ({}) installed at rva {:#x}, {} bytes stolen{}{}",
+                 Binding::SymbolName(records[hook.request]->site), OwnersOf(hook, records),
+                 hook.rva, hook.stolen.size(),
+                 hook.requests.size() > 1 ? std::format(", {} handlers", hook.requests.size())
+                                          : std::string{},
                  hook.ends_with_transfer ? " (ends the function: SkipStolen refused)" : "");
     }
     return true;

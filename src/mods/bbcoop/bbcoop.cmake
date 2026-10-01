@@ -20,6 +20,8 @@ add_library(bbcoop_core STATIC
     ${BBCOOP_DIR}/core/task_queue.h
     ${BBCOOP_DIR}/binding/detour.cpp
     ${BBCOOP_DIR}/binding/detour.h
+    ${BBCOOP_DIR}/binding/guest_mxcsr.cpp
+    ${BBCOOP_DIR}/binding/guest_mxcsr.h
     ${BBCOOP_DIR}/binding/hook_guard.cpp
     ${BBCOOP_DIR}/binding/hook_guard.h
     ${BBCOOP_DIR}/binding/hook_plan.cpp

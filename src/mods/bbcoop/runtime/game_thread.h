@@ -7,6 +7,7 @@
 #include <functional>
 #include <string>
 
+#include "bbcoop/binding/guest_mxcsr.h"
 #include "bbcoop/binding/symbols.h"
 #include "bbcoop/core/call_args.h"
 #include "bbcoop/runtime/binding_runtime.h"
@@ -40,7 +41,11 @@ using FrameCallback = std::function<void(std::uint64_t frame)>;
 //  - Anything that blocks (file or network I/O, waiting for another thread, a contended lock)
 //    stalls the game for as long as it takes. Hand such work to another thread and post the
 //    result back with PostToGameThread.
-//  - They run with the host's default MXCSR (0x1F80), not the game's.
+//  - The mod's own code in them runs with the host's default MXCSR (0x1F80, no flush-to-zero),
+//    not the game's. A game function called through CallGame runs with the game's MXCSR: the
+//    value the game thread had at the hooked site (for tasks and frame callbacks, the tick's
+//    site), or the Orbis default 0x9FC0 outside any hook handler; the host value is back when
+//    CallGame returns or throws.
 //
 // An exception that leaves a task or a frame callback is caught and logged. A task that throws
 // is dropped; a frame callback that throws is disabled and never called again. The tick keeps
@@ -85,13 +90,19 @@ void OnEveryFrame(std::string owner, FrameCallback callback);
 ///     CallGame<void>(SymbolId::some_function, object_pointer, std::uint64_t{0});
 ///
 /// `R` is what the function returns. See the stack budget above.
+///
+/// The game function runs with the game's MXCSR (Binding::CallWithGuestMxcsr: the guest MXCSR
+/// of the hook handler this runs in, 0x9FC0 outside one); the caller's MXCSR is restored right
+/// after it, also when it throws. Arguments are computed before, and the result is used after,
+/// under the caller's (host) MXCSR.
 template <typename R, typename... Args>
 R CallGame(Binding::SymbolId fn, Args... args) {
     static_assert((Core::IsGameCallArg<Args> && ...),
                   "CallGame arguments must be integers, enums, pointers or floating-point values");
     ASSERT_MSG(IsGameThread(), "CallGame used outside the game thread");
     using Fn = R PS4_SYSV_ABI (*)(Args...);
-    return reinterpret_cast<Fn>(SymbolAddress(fn))(args...);
+    const auto target = reinterpret_cast<Fn>(SymbolAddress(fn));
+    return Binding::CallWithGuestMxcsr([&] { return target(args...); });
 }
 
 } // namespace BBCoop::Runtime

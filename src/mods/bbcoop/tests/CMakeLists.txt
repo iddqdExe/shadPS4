@@ -33,6 +33,7 @@ add_executable(bbcoop_core_tests
     config_test.cpp
     detour_test.cpp
     guest_memory_test.cpp
+    guest_mxcsr_test.cpp
     hook_guard_test.cpp
     hook_plan_test.cpp
     map_id_test.cpp

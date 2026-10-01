@@ -7,6 +7,8 @@
 #include <cstring>
 #include <exception>
 
+#include "bbcoop/binding/guest_mxcsr.h"
+
 #ifdef _WIN32
 #include <cstddef>
 
@@ -62,6 +64,8 @@ HookRunResult RunHookHandler(HookContext& ctx, HookSiteRules rules,
                              HookFaultReporter report, void* report_user) noexcept {
     HookRunResult result;
     const HookContext entry = ctx;
+    // Game code the handler calls (CallWithGuestMxcsr) runs with the guest's MXCSR.
+    const GuestMxcsrScope guest_mxcsr{entry.mxcsr};
 #ifdef _WIN32
     // The handler's and the reporter's frames, and those of an exception dispatched inside them,
     // all lie below this function's return address slot.
@@ -77,10 +81,17 @@ HookRunResult RunHookHandler(HookContext& ctx, HookSiteRules rules,
         result.fault = HookFault::UnknownException;
     }
     if (result.fault == HookFault::None) {
-        if (ctx.action == HookAction::ReturnFromFunction && !rules.function_entry) {
+        const HookAction requested = EffectiveAction(ctx.action);
+        const HookAction earlier = EffectiveAction(rules.earlier_action);
+        if (requested == HookAction::ReturnFromFunction && !rules.function_entry) {
             result.fault = HookFault::ReturnAtMidSite;
-        } else if (ctx.action == HookAction::SkipStolen && rules.ends_with_transfer) {
+        } else if (requested == HookAction::SkipStolen && rules.ends_with_transfer) {
             result.fault = HookFault::SkipPastFunctionEnd;
+        } else if (requested != HookAction::Continue && earlier != HookAction::Continue &&
+                   requested != earlier) {
+            result.fault = HookFault::ConflictingAction;
+            result.requested = requested;
+            result.earlier = earlier;
         }
     }
     if (result.fault != HookFault::None) {
@@ -94,6 +105,41 @@ HookRunResult RunHookHandler(HookContext& ctx, HookSiteRules rules,
         }
     }
     return result;
+}
+
+void RunSiteHandlers(HookContext& ctx, HookSiteRules rules, std::span<SiteHandler* const> handlers,
+                     HookFaultReporter report) noexcept {
+    HookAction site_action = HookAction::Continue;
+    for (SiteHandler* const entry : handlers) {
+        if (entry->faulted.load(std::memory_order_acquire)) {
+            continue;
+        }
+        ctx.action = HookAction::Continue;
+        rules.earlier_action = site_action;
+        const auto result = RunHookHandler(ctx, rules, entry->handler, report, entry->report_user);
+        if (result.fault != HookFault::None) {
+            // RunHookHandler has undone this handler's changes and reported the fault.
+            entry->faulted.store(true, std::memory_order_release);
+            continue;
+        }
+        if (const HookAction requested = EffectiveAction(ctx.action);
+            requested != HookAction::Continue) {
+            site_action = requested;
+        }
+    }
+    ctx.action = site_action;
+}
+
+std::string_view ToString(HookAction action) {
+    switch (action) {
+    case HookAction::Continue:
+        return "Continue";
+    case HookAction::SkipStolen:
+        return "SkipStolen";
+    case HookAction::ReturnFromFunction:
+        return "ReturnFromFunction";
+    }
+    return "Continue (unknown value)";
 }
 
 StackBounds CurrentStackBounds() noexcept {

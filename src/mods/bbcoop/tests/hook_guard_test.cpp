@@ -6,9 +6,12 @@
 #include <cstring>
 #include <functional>
 #include <initializer_list>
+#include <memory>
 #include <span>
 #include <stdexcept>
 #include <string>
+#include <utility>
+#include <vector>
 
 #include <gtest/gtest.h>
 #include <windows.h>
@@ -380,4 +383,206 @@ TEST(HookGuardTest, ACppThrowIsUncatchableOnlyWithBothBoundsZero) {
     EXPECT_TRUE(CppThrowIsUncatchable({.base = 0, .limit = 0}));
     EXPECT_FALSE(CppThrowIsUncatchable({.base = 0x7000, .limit = 0})); // inside RunHookHandler
     EXPECT_FALSE(CppThrowIsUncatchable({.base = 0x7000, .limit = 0x1000}));
+}
+
+TEST(HookGuardTest, RefusesAnActionThatConflictsWithAnEarlierHandlersAction) {
+    HookContext ctx = MakeContext();
+    const HookContext before = ctx;
+    const HookSiteRules rules{.function_entry = true, .earlier_action = HookAction::SkipStolen};
+    const auto result = RunHookHandler(ctx, rules, [](HookContext& c) {
+        c.rbx = 5;
+        c.ReturnFromFunction(7);
+    });
+    EXPECT_EQ(result.fault, HookFault::ConflictingAction);
+    EXPECT_EQ(result.requested, HookAction::ReturnFromFunction);
+    EXPECT_EQ(result.earlier, HookAction::SkipStolen);
+    EXPECT_TRUE(SameContext(ctx, before));
+    EXPECT_EQ(ctx.action, HookAction::Continue);
+}
+
+TEST(HookGuardTest, TheSameActionOrContinueDoesNotConflictWithAnEarlierOne) {
+    const HookSiteRules rules{.function_entry = true, .earlier_action = HookAction::SkipStolen};
+    HookContext ctx = MakeContext();
+    EXPECT_EQ(RunHookHandler(ctx, rules, [](HookContext& c) { c.SkipStolenInstructions(); }).fault,
+              HookFault::None);
+    ctx = MakeContext();
+    EXPECT_EQ(RunHookHandler(ctx, rules, [](HookContext& c) { c.rax = 1; }).fault, HookFault::None);
+    // A value that is not a HookAction behaves as Continue, so it is not a request either.
+    ctx = MakeContext();
+    EXPECT_EQ(
+        RunHookHandler(ctx, rules, [](HookContext& c) { c.action = static_cast<HookAction>(7); })
+            .fault,
+        HookFault::None);
+}
+
+TEST(HookGuardTest, ActionsHaveNames) {
+    EXPECT_EQ(ToString(HookAction::Continue), "Continue");
+    EXPECT_EQ(ToString(HookAction::SkipStolen), "SkipStolen");
+    EXPECT_EQ(ToString(HookAction::ReturnFromFunction), "ReturnFromFunction");
+    EXPECT_EQ(EffectiveAction(static_cast<HookAction>(7)), HookAction::Continue);
+    EXPECT_EQ(EffectiveAction(HookAction::SkipStolen), HookAction::SkipStolen);
+}
+
+namespace {
+/// What the handlers of one site did, for RunSiteHandlers.
+struct SiteLog {
+    std::vector<int> calls;
+    std::vector<std::pair<int, HookFault>> faults; ///< (handler id, fault)
+    std::vector<HookAction> actions_on_entry;
+};
+
+struct TestHandler {
+    SiteLog* log = nullptr;
+    int id = 0;
+    SiteHandler entry;
+};
+
+void LogFault(const HookRunResult& result, void* user) {
+    auto* handler = static_cast<TestHandler*>(user);
+    handler->log->faults.emplace_back(handler->id, result.fault);
+}
+
+class SiteHandlersTest : public ::testing::Test {
+protected:
+    /// Adds a handler (ids from 1) that logs its call and the action it saw, then runs `body`.
+    void Add(std::function<void(HookContext&)> body) {
+        auto& h = *handlers_.emplace_back(std::make_unique<TestHandler>());
+        h.log = &log;
+        h.id = static_cast<int>(handlers_.size());
+        h.entry.report_user = &h;
+        h.entry.handler = [this, id = h.id, body = std::move(body)](HookContext& c) {
+            log.calls.push_back(id);
+            log.actions_on_entry.push_back(c.action);
+            body(c);
+        };
+    }
+
+    void Run(HookContext& ctx, HookSiteRules rules = {}) {
+        std::vector<SiteHandler*> entries;
+        for (auto& h : handlers_) {
+            entries.push_back(&h->entry);
+        }
+        RunSiteHandlers(ctx, rules, entries, &LogFault);
+    }
+
+    bool Faulted(int id) const {
+        return handlers_[static_cast<std::size_t>(id - 1)]->entry.faulted.load();
+    }
+
+    SiteLog log;
+
+private:
+    std::vector<std::unique_ptr<TestHandler>> handlers_;
+};
+} // namespace
+
+TEST_F(SiteHandlersTest, RunsEveryHandlerInOrderOnTheSameContext) {
+    Add([](HookContext& c) { c.rax += 1; });
+    Add([](HookContext& c) { c.rax *= 10; });
+    Add([](HookContext& c) { c.rbx = c.rax; });
+    HookContext ctx = MakeContext();
+    const std::uint64_t rax = ctx.rax;
+    Run(ctx);
+    EXPECT_EQ(log.calls, (std::vector<int>{1, 2, 3}));
+    EXPECT_EQ(ctx.rax, (rax + 1) * 10);
+    EXPECT_EQ(ctx.rbx, ctx.rax) << "a handler sees what the earlier ones wrote";
+    EXPECT_EQ(ctx.action, HookAction::Continue);
+    EXPECT_TRUE(log.faults.empty());
+}
+
+TEST_F(SiteHandlersTest, AFaultDisablesOnlyThatHandler) {
+    Add([](HookContext& c) { c.rax = 1; });
+    Add([](HookContext& c) {
+        c.rbx = 2;
+        c.SkipStolenInstructions();
+        throw std::runtime_error("second");
+    });
+    Add([](HookContext& c) { c.rcx = 3; });
+    HookContext ctx = MakeContext();
+    const std::uint64_t rbx = ctx.rbx;
+    Run(ctx);
+    EXPECT_EQ(ctx.rax, 1u);
+    EXPECT_EQ(ctx.rbx, rbx) << "the faulting handler's changes were not undone";
+    EXPECT_EQ(ctx.rcx, 3u) << "the handler after the faulting one did not run";
+    EXPECT_EQ(ctx.action, HookAction::Continue) << "the faulting handler's action was kept";
+    ASSERT_EQ(log.faults.size(), 1u);
+    EXPECT_EQ(log.faults[0], std::make_pair(2, HookFault::Exception));
+    EXPECT_FALSE(Faulted(1));
+    EXPECT_TRUE(Faulted(2));
+    EXPECT_FALSE(Faulted(3));
+
+    // The next hit skips it.
+    log.calls.clear();
+    ctx = MakeContext();
+    Run(ctx);
+    EXPECT_EQ(log.calls, (std::vector<int>{1, 3}));
+    EXPECT_EQ(log.faults.size(), 1u);
+}
+
+TEST_F(SiteHandlersTest, EveryHandlerStartsWithContinueAndTheFirstActionWins) {
+    Add([](HookContext& c) { c.SkipStolenInstructions(); });
+    Add([](HookContext& c) { c.rax = 5; });                  // no action: does not cancel it
+    Add([](HookContext& c) { c.SkipStolenInstructions(); }); // the same action: fine
+    HookContext ctx = MakeContext();
+    Run(ctx);
+    EXPECT_EQ(log.actions_on_entry,
+              (std::vector<HookAction>{HookAction::Continue, HookAction::Continue,
+                                       HookAction::Continue}));
+    EXPECT_EQ(ctx.action, HookAction::SkipStolen);
+    EXPECT_EQ(ctx.rax, 5u);
+    EXPECT_TRUE(log.faults.empty());
+}
+
+TEST_F(SiteHandlersTest, AConflictingActionIsAFaultOfTheLaterHandler) {
+    Add([](HookContext& c) { c.SkipStolenInstructions(); });
+    Add([](HookContext& c) {
+        c.rbx = 9;
+        c.ReturnFromFunction(7);
+    });
+    Add([](HookContext& c) { c.rcx = 3; });
+    HookContext ctx = MakeContext();
+    const HookContext before = ctx;
+    Run(ctx, HookSiteRules{.function_entry = true});
+    EXPECT_EQ(ctx.action, HookAction::SkipStolen) << "the earlier action must stay";
+    EXPECT_EQ(ctx.rax, before.rax) << "the conflicting handler's return value stayed";
+    EXPECT_EQ(ctx.rbx, before.rbx);
+    EXPECT_EQ(ctx.rcx, 3u);
+    ASSERT_EQ(log.faults.size(), 1u);
+    EXPECT_EQ(log.faults[0], std::make_pair(2, HookFault::ConflictingAction));
+    EXPECT_FALSE(Faulted(1));
+    EXPECT_TRUE(Faulted(2));
+    EXPECT_FALSE(Faulted(3));
+}
+
+TEST_F(SiteHandlersTest, AnActionTheRulesRefuseDoesNotBecomeTheSitesAction) {
+    // At a Mid site the first handler's ReturnFromFunction is refused and undone, so the second
+    // handler's SkipStolen is the first valid request and no conflict.
+    Add([](HookContext& c) { c.ReturnFromFunction(1); });
+    Add([](HookContext& c) { c.SkipStolenInstructions(); });
+    HookContext ctx = MakeContext();
+    Run(ctx);
+    EXPECT_EQ(ctx.action, HookAction::SkipStolen);
+    ASSERT_EQ(log.faults.size(), 1u);
+    EXPECT_EQ(log.faults[0], std::make_pair(1, HookFault::ReturnAtMidSite));
+}
+
+TEST_F(SiteHandlersTest, ReturnFromFunctionStaysWhenALaterHandlerAsksForNothing) {
+    Add([](HookContext& c) { c.ReturnFromFunction(42); });
+    Add([](HookContext& c) { c.rbx = 1; });
+    HookContext ctx = MakeContext();
+    Run(ctx, HookSiteRules{.function_entry = true});
+    EXPECT_EQ(ctx.action, HookAction::ReturnFromFunction);
+    EXPECT_EQ(ctx.rax, 42u);
+    EXPECT_EQ(ctx.rbx, 1u);
+}
+
+TEST_F(SiteHandlersTest, WithEveryHandlerFaultedTheSiteContinuesUntouched) {
+    Add([](HookContext&) { throw 1; });
+    HookContext ctx = MakeContext();
+    Run(ctx);
+    ctx = MakeContext();
+    const HookContext before = ctx;
+    Run(ctx);
+    EXPECT_EQ(log.calls, (std::vector<int>{1}));
+    EXPECT_TRUE(SameContext(ctx, before));
 }

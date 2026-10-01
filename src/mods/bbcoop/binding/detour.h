@@ -39,7 +39,9 @@ enum class HookAction : std::uint32_t {
 ///  - site is information only. Writing it has no effect: there is no redirection of rip.
 ///  - mxcsr is the guest's MXCSR. The callback itself runs with the default value 0x1F80 (round to
 ///    nearest, all exceptions masked, FTZ/DAZ off), so host code in it is not subject to the
-///    guest's rounding mode. Bits 31:16 are reserved: the trampoline clears them before it loads
+///    guest's rounding mode; game code it calls must be run with the guest's value again
+///    (RunHookHandler records it for CallWithGuestMxcsr, see guest_mxcsr.h). Bits 31:16 are
+///    reserved: the trampoline clears them before it loads
 ///    the value back, so a stray write cannot fault, but it should not set them. The x87 control
 ///    word and stack are not part of the context; a callback runs with the guest's x87 state and
 ///    must leave the x87 stack as it found it.
