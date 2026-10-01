@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #include <fmt/format.h>
+#include "bbcoop/binding/hook_guard.h"
 #include "common/arch.h"
 #include "common/assert.h"
 #include "common/decoder.h"
@@ -126,8 +127,19 @@ static LONG WINAPI SignalHandler(EXCEPTION_POINTERS* pExp) noexcept {
         LOG_DEBUG(Debug, "Pass MS_VC_EXCEPTION at {} to handler", address);
         return EXCEPTION_EXECUTE_HANDLER;
     case MSVC_CPP_EXCEPTION:
-        // Not an emulator fault: host code throws and catches C++ exceptions. Leave it to the
-        // catch handlers without logging it or shutting the emulator down.
+        // Not an emulator fault in itself: host code throws and catches C++ exceptions, so leave
+        // it to the catch handlers without logging it or shutting the emulator down. The one
+        // exception: with both TEB stack bounds at 0 the thread runs on a guest stack
+        // (_runOnAnotherStack zeroes them) outside a BB Co-op hook guard, which would set valid
+        // ones. There the dispatcher rejects every frame, no catch can ever run and the process
+        // is about to end, so report it and shut down (which flushes the log) as before.
+        if (BBCoop::Binding::CppThrowIsUncatchable(BBCoop::Binding::CurrentStackBounds())) {
+            LOG_CRITICAL(Debug,
+                         "Unhandled Exception code {:#x} at {}: a C++ exception on a guest stack, "
+                         "where it cannot be caught",
+                         code, address);
+            Common::Singleton<Core::Emulator>::Instance()->Shutdown();
+        }
         return EXCEPTION_CONTINUE_SEARCH;
     default:
         break;
