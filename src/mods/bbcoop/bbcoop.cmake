@@ -13,6 +13,8 @@ set(BBCOOP_DIR ${CMAKE_CURRENT_LIST_DIR})
 add_library(bbcoop_core STATIC
     ${BBCOOP_DIR}/core/config.cpp
     ${BBCOOP_DIR}/core/config.h
+    ${BBCOOP_DIR}/binding/patch_table.cpp
+    ${BBCOOP_DIR}/binding/patch_table.h
     ${BBCOOP_DIR}/binding/resolver.cpp
     ${BBCOOP_DIR}/binding/resolver.h
     ${BBCOOP_DIR}/binding/signature.cpp

@@ -30,6 +30,7 @@ include(GoogleTest)
 
 add_executable(bbcoop_core_tests
     config_test.cpp
+    patch_table_test.cpp
     resolver_test.cpp
     signature_test.cpp
 )
