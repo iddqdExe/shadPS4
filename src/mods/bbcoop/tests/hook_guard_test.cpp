@@ -219,6 +219,8 @@ struct GuestProbe {
     std::uint64_t limit_after = 1;
     int reports = 0;
     HookFault reported = HookFault::None;
+    bool uncatchable_outside = false; ///< CppThrowIsUncatchable before the guard.
+    bool uncatchable_inside = true;   ///< CppThrowIsUncatchable inside the handler.
 };
 
 /// Like the runtime's fault logger, except that it throws as well: that must not escape either.
@@ -233,6 +235,7 @@ void ThrowingReporter(const HookRunResult& result, void* user) {
 void BBCOOP_SYSV_ABI GuardedCallback(HookContext* ctx, void* user) {
     auto* probe = static_cast<GuestProbe*>(user);
     ++probe->calls;
+    probe->uncatchable_outside = CppThrowIsUncatchable(CurrentStackBounds());
     probe->result = RunHookHandler(*ctx, false, probe->handler, ThrowingReporter, probe);
     probe->base_after = TebStackBase();
     probe->limit_after = TebStackLimit();
@@ -294,6 +297,7 @@ TEST(HookGuardTest, CatchesAnExceptionThrownOnAGuestStackWithZeroTebBounds) {
     probe.handler = [&probe](HookContext& c) {
         probe.base_in_handler = TebStackBase();
         probe.limit_in_handler = TebStackLimit();
+        probe.uncatchable_inside = CppThrowIsUncatchable(CurrentStackBounds());
         c.rax = 0xDEAD;
         throw std::runtime_error("boom from the guest stack");
     };
@@ -322,4 +326,58 @@ TEST(HookGuardTest, CatchesAnExceptionThrownOnAGuestStackWithZeroTebBounds) {
         << "the bounds must end on the guest stack, below the guest's own frames";
     EXPECT_EQ(probe.base_after, 0u) << "the guest's TEB stack base was not restored";
     EXPECT_EQ(probe.limit_after, 0u) << "the guest's TEB stack limit was not restored";
+    // What the emulator's exception handler tells apart (0B-R47): a throw on the guest stack
+    // outside the guard can never be caught, one inside it can.
+    EXPECT_TRUE(probe.uncatchable_outside);
+    EXPECT_FALSE(probe.uncatchable_inside);
+}
+
+TEST(HookGuardTest, RefusesSkipStolenWhereTheStolenBytesEndWithATransfer) {
+    HookContext ctx = MakeContext();
+    const HookContext before = ctx;
+    const auto result =
+        RunHookHandler(ctx, HookSiteRules{.ends_with_transfer = true}, [](HookContext& c) {
+            c.rax = 3;
+            c.SkipStolenInstructions();
+        });
+    EXPECT_EQ(result.fault, HookFault::SkipPastFunctionEnd);
+    EXPECT_TRUE(SameContext(ctx, before));
+    EXPECT_EQ(ctx.action, HookAction::Continue);
+}
+
+TEST(HookGuardTest, AllowsTheOtherActionsWhereTheStolenBytesEndWithATransfer) {
+    // Continue runs the stolen jump or ret itself; ReturnFromFunction at an entry returns first.
+    const HookSiteRules rules{.function_entry = true, .ends_with_transfer = true};
+    HookContext ctx = MakeContext();
+    EXPECT_EQ(RunHookHandler(ctx, rules, [](HookContext& c) { c.rax = 1; }).fault, HookFault::None);
+    EXPECT_EQ(ctx.rax, 1u);
+    EXPECT_EQ(RunHookHandler(ctx, rules, [](HookContext& c) { c.ReturnFromFunction(2); }).fault,
+              HookFault::None);
+    EXPECT_EQ(ctx.action, HookAction::ReturnFromFunction);
+    // Without the rule SkipStolen is fine.
+    ctx = MakeContext();
+    EXPECT_EQ(
+        RunHookHandler(ctx, HookSiteRules{}, [](HookContext& c) { c.SkipStolenInstructions(); })
+            .fault,
+        HookFault::None);
+    EXPECT_EQ(ctx.action, HookAction::SkipStolen);
+}
+
+TEST(HookGuardTest, ReportsTheCallingThreadsTebStackBounds) {
+    const auto bounds = CurrentStackBounds();
+    EXPECT_EQ(bounds.base, TebStackBase());
+    EXPECT_EQ(bounds.limit, TebStackLimit());
+    // An ordinary host thread: the current frame lies inside the bounds.
+    int local = 0;
+    const auto here = reinterpret_cast<std::uint64_t>(&local);
+    EXPECT_LT(here, bounds.base);
+    EXPECT_GE(here, bounds.limit);
+    EXPECT_FALSE(CppThrowIsUncatchable(bounds));
+}
+
+TEST(HookGuardTest, ACppThrowIsUncatchableOnlyWithBothBoundsZero) {
+    static_assert(CppThrowIsUncatchable({}));
+    EXPECT_TRUE(CppThrowIsUncatchable({.base = 0, .limit = 0}));
+    EXPECT_FALSE(CppThrowIsUncatchable({.base = 0x7000, .limit = 0})); // inside RunHookHandler
+    EXPECT_FALSE(CppThrowIsUncatchable({.base = 0x7000, .limit = 0x1000}));
 }

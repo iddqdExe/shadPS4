@@ -31,12 +31,17 @@ include(GoogleTest)
 add_executable(bbcoop_core_tests
     config_test.cpp
     detour_test.cpp
+    guest_memory_test.cpp
     hook_guard_test.cpp
+    hook_plan_test.cpp
     patch_table_test.cpp
     relocator_test.cpp
     resolver_test.cpp
     signature_test.cpp
     symbols_test.cpp
+    # Lives in runtime/ but has no emulator dependencies (it only asks the host with VirtualQuery),
+    # so the tests compile it directly.
+    ${BBCOOP_DIR}/runtime/guest_memory.cpp
 )
 # Same isolation as bbcoop_core: drop the include_directories(src) inherited from the top level.
 set_target_properties(bbcoop_core_tests PROPERTIES INCLUDE_DIRECTORIES "")

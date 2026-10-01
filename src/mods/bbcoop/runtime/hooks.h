@@ -10,14 +10,16 @@
 #include <string>
 
 #include "bbcoop/binding/detour.h"
+#include "bbcoop/binding/hook_plan.h"
 #include "bbcoop/binding/resolver.h"
 #include "bbcoop/binding/symbols.h"
 
 namespace BBCoop::Runtime {
 
-/// FunctionEntry: the first instruction of a function, where [rsp] is the return address and
-/// HookContext::ReturnFromFunction is allowed. Mid: any other instruction.
-enum class HookSiteKind { FunctionEntry, Mid };
+/// FunctionEntry: the first instruction of a function (a Function symbol), where [rsp] is the
+/// return address and HookContext::ReturnFromFunction is allowed. Mid: any other instruction of a
+/// Function or Site symbol.
+using HookSiteKind = Binding::HookSiteKind;
 
 /// A detour handler. It runs on the game thread that reached the site, on that thread's GUEST
 /// stack (below the guest's red zone and the saved context), with MXCSR 0x1F80.
@@ -28,24 +30,26 @@ enum class HookSiteKind { FunctionEntry, Mid };
 /// much smaller, and none has a guard page: an overflow silently corrupts guest memory. Keep
 /// handlers short and move heavy work elsewhere.
 ///
-/// An exception that leaves the handler, or a ReturnFromFunction request at a Mid site, is a
-/// fault: the guest resumes with the context it had at the site (the handler's changes are
-/// dropped), the fault is logged and the handler never runs again.
+/// A fault — an exception that leaves the handler, ReturnFromFunction at a Mid site, or
+/// SkipStolenInstructions at a site whose stolen bytes end with an unconditional jump or ret (the
+/// guest would continue past the end of the function) — makes the guest resume with the context
+/// it had at the site (the handler's changes are dropped); the fault is logged and the handler
+/// never runs again.
 using HookHandler = std::function<void(Binding::HookContext&)>;
 
 /// Registers a detour; call before the game is loaded (from BBCoop::Initialize()). A hook
-/// registered after InstallHooks ran is refused with an error in the log.
+/// registered after InstallHooks ran, or with an empty handler, is refused with an error in the
+/// log.
 void RegisterHook(Binding::SymbolId site, HookSiteKind kind, std::string owner,
                   HookHandler handler);
 
 std::size_t HookCount();
 
-/// Generates every trampoline first, then writes every site patch. On any failure nothing is
-/// written and `error` explains why. A hook is refused when its site symbol is unresolved, its
-/// stolen bytes run past the end of the function (an unconditional jump, ret, ud2 or int3 before
-/// the last stolen instruction), overlap another hook's, differ from `pristine` in the live text
-/// (or within 16 bytes around them), cannot be relocated, or no trampoline space is left.
-/// `pristine` is the executable segment before any patching, at `text_rva` from `base`.
+/// Plans every hook (Binding::PlanHooks: kind fits the symbol, resolved, inside text, function
+/// does not end inside the stolen bytes, no overlap, live text pristine around the site), then
+/// generates every trampoline, then writes every site patch. On any failure nothing is written
+/// and `error` explains why. `pristine` is the executable segment before any patching, at
+/// `text_rva` from `base`.
 bool InstallHooks(std::uint64_t base, std::span<const std::uint8_t> pristine,
                   std::uint64_t text_rva, const Binding::ResolveResult& resolved,
                   std::string& error);

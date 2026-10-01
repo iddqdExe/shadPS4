@@ -17,6 +17,8 @@ add_library(bbcoop_core STATIC
     ${BBCOOP_DIR}/binding/detour.h
     ${BBCOOP_DIR}/binding/hook_guard.cpp
     ${BBCOOP_DIR}/binding/hook_guard.h
+    ${BBCOOP_DIR}/binding/hook_plan.cpp
+    ${BBCOOP_DIR}/binding/hook_plan.h
     ${BBCOOP_DIR}/binding/patch_table.cpp
     ${BBCOOP_DIR}/binding/patch_table.h
     ${BBCOOP_DIR}/binding/relocator.cpp

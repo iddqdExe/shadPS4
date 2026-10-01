@@ -75,9 +75,10 @@ std::expected<std::size_t, std::string> StealLength(std::span<const std::uint8_t
     return length;
 }
 
-std::expected<std::optional<std::size_t>, std::string> FindEarlyControlTransfer(
+std::expected<ControlTransferScan, std::string> ScanControlTransfers(
     std::span<const std::uint8_t> code) {
     const auto decoder = MakeDecoder();
+    ControlTransferScan scan;
     std::size_t offset = 0;
     while (offset < code.size()) {
         ZydisDecodedInstruction insn;
@@ -102,12 +103,23 @@ std::expected<std::optional<std::size_t>, std::string> FindEarlyControlTransfer(
         default:
             break;
         }
-        if (unconditional && offset + insn.length < code.size()) {
-            return offset;
+        const bool last = offset + insn.length >= code.size();
+        if (unconditional && !last && !scan.early) {
+            scan.early = offset;
         }
+        scan.ends_with_transfer = unconditional && last;
         offset += insn.length;
     }
-    return std::nullopt;
+    return scan;
+}
+
+std::expected<std::optional<std::size_t>, std::string> FindEarlyControlTransfer(
+    std::span<const std::uint8_t> code) {
+    const auto scan = ScanControlTransfers(code);
+    if (!scan) {
+        return std::unexpected(scan.error());
+    }
+    return scan->early;
 }
 
 std::expected<std::vector<std::uint8_t>, std::string> RelocateInstructions(

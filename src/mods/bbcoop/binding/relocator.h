@@ -31,6 +31,19 @@ std::expected<std::size_t, std::string> StealLength(std::span<const std::uint8_t
 std::expected<std::optional<std::size_t>, std::string> FindEarlyControlTransfer(
     std::span<const std::uint8_t> code);
 
+struct ControlTransferScan {
+    /// What FindEarlyControlTransfer returns.
+    std::optional<std::size_t> early;
+    /// The last instruction is an unconditional control transfer (same set). Running the code ends
+    /// there, so continuing at the first byte after `code` without running it (a detour's
+    /// SkipStolen) would run past the end of the function.
+    bool ends_with_transfer = false;
+};
+
+/// FindEarlyControlTransfer plus whether `code` ends with an unconditional control transfer.
+std::expected<ControlTransferScan, std::string> ScanControlTransfers(
+    std::span<const std::uint8_t> code);
+
 /// Re-encodes `code`, which sits at `source_address`, to run from `target_address`: RIP-relative
 /// operands and relative jumps and calls keep their original targets. Short jcc/jmp are widened
 /// to rel32 when the new target needs it.

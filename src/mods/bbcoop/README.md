@@ -12,7 +12,7 @@ parent repository.
 | Folder | Module (spec §9) | Contents |
 |---|---|---|
 | `core/` | shared | Pure logic without emulator dependencies (config, queues, policies). Built into `bbcoop_core`. |
-| `binding/` | M2 game_binding | Pure binding primitives: signatures, resolver, patch table, relocator, detours; generated EU 1.09 data in `binding/data/` (written by `tools/re/Generate-Signatures.ps1` of the parent repository, never edited by hand) behind `binding/symbols.h`. |
+| `binding/` | M2 game_binding | Pure binding primitives: signatures, resolver, patch table, relocator, detours, hook planning and the hook handler guard; generated EU 1.09 data in `binding/data/` (written by `tools/re/Generate-Signatures.ps1` of the parent repository, never edited by hand) behind `binding/symbols.h`. |
 | `runtime/` | M2 game_binding | Glue that touches emulator internals: mod entry points, guest memory, hooks, game thread, game API. Compiled into `shadps4`. |
 | `session/` | M6 coop/session | Stage 2 |
 | `travel/` | M7 coop/travel | Stage 3 |

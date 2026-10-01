@@ -7,6 +7,7 @@
 #include <cstring>
 #include <optional>
 #include <span>
+#include <type_traits>
 
 namespace BBCoop::Runtime {
 
@@ -19,6 +20,8 @@ bool IsReadable(std::uint64_t address, std::uint64_t size);
 
 template <typename T>
 std::optional<T> ReadGuest(std::uint64_t address) {
+    static_assert(std::is_trivially_copyable_v<T> && std::is_default_constructible_v<T>,
+                  "ReadGuest copies raw guest bytes into T");
     if (!IsReadable(address, sizeof(T))) {
         return std::nullopt;
     }

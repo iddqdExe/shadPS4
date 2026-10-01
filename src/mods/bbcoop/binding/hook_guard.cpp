@@ -57,7 +57,7 @@ void CopyMessage(std::array<char, 256>& out, const char* text) noexcept {
 }
 } // namespace
 
-HookRunResult RunHookHandler(HookContext& ctx, bool function_entry,
+HookRunResult RunHookHandler(HookContext& ctx, HookSiteRules rules,
                              const std::function<void(HookContext&)>& handler,
                              HookFaultReporter report, void* report_user) noexcept {
     HookRunResult result;
@@ -76,9 +76,12 @@ HookRunResult RunHookHandler(HookContext& ctx, bool function_entry,
     } catch (...) {
         result.fault = HookFault::UnknownException;
     }
-    if (result.fault == HookFault::None && ctx.action == HookAction::ReturnFromFunction &&
-        !function_entry) {
-        result.fault = HookFault::ReturnAtMidSite;
+    if (result.fault == HookFault::None) {
+        if (ctx.action == HookAction::ReturnFromFunction && !rules.function_entry) {
+            result.fault = HookFault::ReturnAtMidSite;
+        } else if (ctx.action == HookAction::SkipStolen && rules.ends_with_transfer) {
+            result.fault = HookFault::SkipPastFunctionEnd;
+        }
     }
     if (result.fault != HookFault::None) {
         ctx = entry;
@@ -91,6 +94,16 @@ HookRunResult RunHookHandler(HookContext& ctx, bool function_entry,
         }
     }
     return result;
+}
+
+StackBounds CurrentStackBounds() noexcept {
+#ifdef _WIN32
+    const auto* tib = reinterpret_cast<const NT_TIB*>(NtCurrentTeb());
+    return {reinterpret_cast<std::uint64_t>(tib->StackBase),
+            reinterpret_cast<std::uint64_t>(tib->StackLimit)};
+#else
+    return {};
+#endif
 }
 
 } // namespace BBCoop::Binding

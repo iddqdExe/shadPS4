@@ -24,6 +24,7 @@
 #include "common/assert.h"
 #include "common/elf_info.h"
 #include "common/logging/log.h"
+#include "core/cpu_patches.h"
 #include "core/emulator_settings.h"
 
 namespace BBCoop::Runtime {
@@ -39,7 +40,9 @@ struct State {
     Binding::ResolveResult resolved;
     std::atomic<bool> active{false};
 };
-State g_state;
+// Intentionally leaked: guest threads can still call IsActive/SymbolAddress while static
+// destructors run at process exit.
+State& g_state = *new State();
 
 void Disable(std::string_view reason) {
     g_state.active = false;
@@ -61,8 +64,11 @@ void Activate(std::uint64_t base, std::uint64_t size) {
                             kAppVersion));
         return;
     }
-    if (EmulatorSettings.IsRedZonePatchingEnabled()) {
-        Disable("redzone_patches is enabled in the shadPS4 config; disable it to use BB Co-op");
+    // The setting, and the mode the loader acted on (module.cpp reads the mode).
+    if (EmulatorSettings.IsRedZonePatchingEnabled() ||
+        ::Core::WindowsGuestRedZoneProtection::IsStaticPatchingEnabled()) {
+        Disable("guest red-zone patching is on (redzone_patches in the shadPS4 config); turn it "
+                "off to use BB Co-op");
         return;
     }
     const auto& pristine = g_state.pristine;

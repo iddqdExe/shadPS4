@@ -3,7 +3,6 @@
 
 #include "bbcoop/runtime/hooks.h"
 
-#include <algorithm>
 #include <array>
 #include <atomic>
 #include <cstring>
@@ -16,35 +15,31 @@
 #include <windows.h>
 
 #include "bbcoop/binding/hook_guard.h"
-#include "bbcoop/binding/relocator.h"
 #include "common/logging/log.h"
 #include "core/cpu_patches.h"
 
 namespace BBCoop::Runtime {
 
 namespace {
-/// The site is overwritten with a JMP rel32.
-constexpr std::size_t kJumpSize = 5;
-/// Bytes decoded at a site to find the stolen length; more than any 5..16 byte steal needs.
-constexpr std::size_t kDecodeWindow = 32;
-/// Bytes on each side of the stolen ones that must also be untouched by other patchers.
-constexpr std::size_t kNeighbourhood = 16;
-
 struct HookRecord {
     Binding::SymbolId site;
     HookSiteKind kind;
     std::string owner;
     HookHandler handler;
+    /// Set by InstallHooks before the site is patched.
+    Binding::HookSiteRules rules;
     std::atomic<bool> faulted{false};
 };
 
+/// Intentionally leaked: guest threads can still reach a hook site while static destructors run
+/// at process exit, and the trampolines point at these records.
 std::vector<std::unique_ptr<HookRecord>>& Records() {
-    static std::vector<std::unique_ptr<HookRecord>> records;
+    static auto& records = *new std::vector<std::unique_ptr<HookRecord>>();
     return records;
 }
 
 /// Set when InstallHooks runs; a hook registered later would never be installed.
-bool g_install_ran = false;
+std::atomic<bool> g_install_ran{false};
 
 /// Runs inside RunHookHandler's stack bounds, so a throw from the logger cannot reach the guest.
 void ReportFault(const Binding::HookRunResult& result, void* user) {
@@ -66,6 +61,12 @@ void ReportFault(const Binding::HookRunResult& result, void* user) {
                      "handler disabled",
                      rec->owner, site);
         break;
+    case Binding::HookFault::SkipPastFunctionEnd:
+        LOG_CRITICAL(BBCoop_Binding,
+                     "hook '{}' at {} asked for SkipStolenInstructions where the stolen bytes end "
+                     "the function; handler disabled",
+                     rec->owner, site);
+        break;
     case Binding::HookFault::None:
         break;
     }
@@ -78,16 +79,20 @@ void BBCOOP_SYSV_ABI HookThunk(Binding::HookContext* ctx, void* user) noexcept {
     if (rec->faulted.load(std::memory_order_acquire)) {
         return;
     }
-    Binding::RunHookHandler(*ctx, rec->kind == HookSiteKind::FunctionEntry, rec->handler,
-                            &ReportFault, rec);
+    Binding::RunHookHandler(*ctx, rec->rules, rec->handler, &ReportFault, rec);
 }
 } // namespace
 
 void RegisterHook(Binding::SymbolId site, HookSiteKind kind, std::string owner,
                   HookHandler handler) {
-    if (g_install_ran) {
+    if (g_install_ran.load()) {
         LOG_ERROR(BBCoop_Binding, "hook '{}' at {} registered after the game was loaded; ignored",
                   owner, Binding::SymbolName(site));
+        return;
+    }
+    if (!handler) {
+        LOG_ERROR(BBCoop_Binding, "hook '{}' at {} has no handler; ignored", owner,
+                  Binding::SymbolName(site));
         return;
     }
     auto rec = std::make_unique<HookRecord>();
@@ -105,95 +110,66 @@ std::size_t HookCount() {
 bool InstallHooks(std::uint64_t base, std::span<const std::uint8_t> pristine,
                   std::uint64_t text_rva, const Binding::ResolveResult& resolved,
                   std::string& error) {
-    g_install_ran = true;
-    struct Planned {
-        std::string_view name;
-        std::string_view owner;
-        std::uint64_t rva;
-        std::size_t steal;
+    g_install_ran.store(true);
+    const auto& records = Records();
+    std::vector<Binding::HookRequest> requests;
+    requests.reserve(records.size());
+    for (const auto& rec : records) {
+        requests.push_back({static_cast<std::size_t>(rec->site), rec->kind, rec->owner});
+    }
+    const std::span<const std::uint8_t> live(reinterpret_cast<const std::uint8_t*>(base + text_rva),
+                                             pristine.size());
+    const auto plan =
+        Binding::PlanHooks({requests, Binding::Eu109Symbols(), resolved, pristine, live, text_rva});
+    if (!plan) {
+        error = plan.error();
+        return false;
+    }
+
+    struct Built {
         std::uint8_t* site;
         std::array<std::uint8_t, 16> patch;
         std::size_t patch_size;
     };
-    std::vector<Planned> planned;
-    planned.reserve(Records().size());
-    const auto* live = reinterpret_cast<const std::uint8_t*>(base + text_rva);
-    for (const auto& rec : Records()) {
-        const auto name = Binding::SymbolName(rec->site);
-        const auto site_rva = resolved.Rva(static_cast<std::size_t>(rec->site));
-        if (!site_rva) {
-            error = std::format("hook {}: site symbol is not resolved", name);
-            return false;
-        }
-        const std::uint64_t rva = *site_rva;
-        if (rva < text_rva || rva - text_rva >= pristine.size()) {
-            error = std::format("hook {}: site {:#x} is outside the text segment", name, rva);
-            return false;
-        }
-        const std::size_t off = static_cast<std::size_t>(rva - text_rva);
-        const auto steal = Binding::StealLength(
-            pristine.subspan(off, std::min(kDecodeWindow, pristine.size() - off)), kJumpSize);
-        if (!steal) {
-            error = std::format("hook {}: {}", name, steal.error());
-            return false;
-        }
-        const auto stolen = pristine.subspan(off, *steal);
-        // The jump must not overwrite code after the end of the function (0B-R46).
-        const auto early_end = Binding::FindEarlyControlTransfer(stolen);
-        if (!early_end) {
-            error = std::format("hook {}: {}", name, early_end.error());
-            return false;
-        }
-        if (*early_end) {
-            error = std::format("hook {}: the code at {:#x} ends at +{:#x} with an unconditional "
-                                "jump, ret or trap, inside the {} bytes the hook overwrites",
-                                name, rva, **early_end, *steal);
-            return false;
-        }
-        for (const auto& other : planned) {
-            if (rva < other.rva + other.steal && other.rva < rva + *steal) {
-                error = std::format("hook {} overlaps hook {} (owners '{}' and '{}')", name,
-                                    other.name, rec->owner, other.owner);
-                return false;
-            }
-        }
-        // The stolen bytes must be exactly the pristine ones: an emulator patch there is a jump
-        // into a cpu_patches trampoline, which the relocator would copy blindly.
-        const std::size_t lo = off >= kNeighbourhood ? off - kNeighbourhood : 0;
-        const std::size_t hi = std::min(off + *steal + kNeighbourhood, pristine.size());
-        if (std::memcmp(live + lo, pristine.data() + lo, hi - lo) != 0) {
-            error = std::format("hook {}: code around {:#x} was modified by another patcher "
-                                "(an XML patch, the emulator or a BB Co-op byte patch)",
-                                name, rva);
-            return false;
-        }
-        auto* site = reinterpret_cast<std::uint8_t*>(base + rva);
+    std::vector<Built> built;
+    built.reserve(plan->size());
+    for (const auto& hook : *plan) {
+        auto& rec = *records[hook.request];
+        const auto name = Binding::SymbolName(rec.site);
+        auto* site = reinterpret_cast<std::uint8_t*>(base + hook.rva);
         auto* tramp = ::Core::ReserveModuleTrampolineSpace(site, Binding::kMaxTrampolineSize);
         if (tramp == nullptr) {
             error = std::format("hook {}: no trampoline space next to the eboot", name);
             return false;
         }
         const auto code = Binding::BuildDetour(
-            {reinterpret_cast<std::uint64_t>(site), stolen, &HookThunk, rec.get()}, tramp,
+            {reinterpret_cast<std::uint64_t>(site), hook.stolen, &HookThunk, &rec}, tramp,
             Binding::kMaxTrampolineSize);
         if (!code) {
             error = std::format("hook {}: {}", name, code.error());
             return false;
         }
-        planned.push_back(
-            {name, rec->owner, rva, *steal, site, code->site_patch, code->site_patch_size});
+        built.push_back({site, code->site_patch, code->site_patch_size});
     }
     // Nothing above wrote outside the reserved trampoline space; an aborted plan leaves only
-    // unreachable trampoline bytes behind.
-    for (const auto& p : planned) {
-        std::memcpy(p.site, p.patch.data(), p.patch_size);
+    // unreachable trampoline bytes behind. No guest code runs yet, so the records and the sites
+    // are written without synchronization.
+    for (std::size_t i = 0; i < plan->size(); ++i) {
+        const auto& hook = (*plan)[i];
+        records[hook.request]->rules = {
+            .function_entry = records[hook.request]->kind == HookSiteKind::FunctionEntry,
+            .ends_with_transfer = hook.ends_with_transfer,
+        };
+        std::memcpy(built[i].site, built[i].patch.data(), built[i].patch_size);
     }
-    if (!planned.empty()) {
+    if (!built.empty()) {
         FlushInstructionCache(GetCurrentProcess(), nullptr, 0);
     }
-    for (const auto& p : planned) {
-        LOG_INFO(BBCoop_Binding, "hook {} ('{}') installed at rva {:#x}, {} bytes stolen", p.name,
-                 p.owner, p.rva, p.steal);
+    for (const auto& hook : *plan) {
+        const auto& rec = *records[hook.request];
+        LOG_INFO(BBCoop_Binding, "hook {} ('{}') installed at rva {:#x}, {} bytes stolen{}",
+                 Binding::SymbolName(rec.site), rec.owner, hook.rva, hook.stolen.size(),
+                 hook.ends_with_transfer ? " (ends the function: SkipStolen refused)" : "");
     }
     return true;
 }

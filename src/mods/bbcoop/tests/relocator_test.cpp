@@ -3,6 +3,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -407,4 +408,33 @@ TEST(RelocatorTest, EarlyControlTransferReportsUndecodableBytes) {
     const auto found = FindEarlyControlTransfer(code);
     ASSERT_FALSE(found.has_value());
     EXPECT_NE(found.error().find("+0x1"), std::string::npos) << found.error();
+}
+
+TEST(RelocatorTest, ScanReportsAnUnconditionalTransferAtTheEnd) {
+    using Bytes = std::vector<std::uint8_t>;
+    const auto ends = [](const Bytes& code) {
+        const auto scan = ScanControlTransfers(code);
+        EXPECT_TRUE(scan.has_value());
+        EXPECT_FALSE(scan->early.has_value());
+        return scan->ends_with_transfer;
+    };
+    EXPECT_TRUE(ends(Bytes{0xE9, 0x00, 0x01, 0x00, 0x00}));              // jmp rel32 (a tail call)
+    EXPECT_TRUE(ends(Bytes{0x90, 0x90, 0x90, 0x90, 0xC3}));              // ret
+    EXPECT_TRUE(ends(Bytes{0x90, 0x90, 0x90, 0xFF, 0xE0}));              // jmp rax
+    EXPECT_TRUE(ends(Bytes{0x90, 0x90, 0x90, 0x0F, 0x0B}));              // ud2
+    EXPECT_FALSE(ends(Bytes{0x48, 0x81, 0xC4, 0xE8, 0x07, 0x00, 0x00})); // add rsp, 0x7E8
+    EXPECT_FALSE(ends(Bytes{0xE8, 0x00, 0x00, 0x00, 0x00}));             // call: returns here
+    EXPECT_FALSE(ends(Bytes{0x90, 0x90, 0x90, 0x74, 0x03}));             // jcc: falls through
+    EXPECT_FALSE(ends(Bytes{}));
+}
+
+TEST(RelocatorTest, ScanReportsTheEarlyTransferLikeFindEarlyControlTransfer) {
+    const std::vector<std::uint8_t> code{0x48, 0x89, 0xC8, 0xC3, 0xCC};
+    const auto scan = ScanControlTransfers(code);
+    ASSERT_TRUE(scan.has_value());
+    EXPECT_EQ(scan->early, std::optional<std::size_t>{3});
+    EXPECT_TRUE(scan->ends_with_transfer); // int3 is the last instruction
+    const auto bad = ScanControlTransfers(std::vector<std::uint8_t>{0x90, 0x0F});
+    ASSERT_FALSE(bad.has_value());
+    EXPECT_NE(bad.error().find("+0x1"), std::string::npos) << bad.error();
 }
