@@ -35,6 +35,7 @@ add_executable(bbcoop_core_tests
     guest_memory_test.cpp
     hook_guard_test.cpp
     hook_plan_test.cpp
+    map_id_test.cpp
     patch_table_test.cpp
     relocator_test.cpp
     resolver_test.cpp

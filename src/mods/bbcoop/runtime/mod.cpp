@@ -6,6 +6,7 @@
 #include <cstdint>
 #include <stdexcept>
 
+#include "bbcoop/runtime/game_api.h"
 #include "bbcoop/runtime/game_thread.h"
 #include "common/logging/log.h"
 #include "common/path_util.h"
@@ -56,6 +57,7 @@ void Initialize() {
              Core::ToString(g_config.host.echo_loss), Core::ToString(g_config.host.auto_grant));
     if (g_config.enabled) {
         Runtime::InitializeGameThread();
+        Runtime::InitializeGameApi();
         if (g_config.debug.self_test_exceptions) {
             ArmExceptionSelfTest();
         }

@@ -94,3 +94,23 @@ trip to Central Yharnam):
   just slow down, was not measured; code that must know has to count ticks itself (`FrameCount()`).
 - No `second thread` line and no `Unhandled Exception` line; the two `self_test_*` callbacks threw
   once each and were disabled, and the game behaved normally.
+
+## Game API
+
+`runtime/game_api.h` reads the game's own structures. Every call runs on the game thread (it asserts
+otherwise) and every read goes through `ReadGuest`, so a pointer that is stale or not yet valid
+gives `nullopt` instead of a crash.
+
+| Call | Reads |
+|---|---|
+| `GetLocalPlayerIns()` | `[[world_chr_man_slot] + 0x60]`, the local PlayerIns |
+| `GetLocalPlayer()` | PlayerIns plus position (x, y, z) and heading from its transform: PlayerIns `+0x58 -> +0x08 -> +0x3B0 -> +0x68`, heading `+0x1D4`, position `+0x1E0/+0x1E4/+0x1E8`; `nullopt` when a link is unreadable or a value is not finite |
+| `GetCurrentMapId()` | The active entry of the map list `[current_map_list_slot]` (index `+0x20`, owner `+0x10`, count `+0x18`, entries `+0x20`, stride `0xA0`, packed id `+0x08`); `Core::FormatMapId` turns `0x18010000` into `m24_01_00_00` |
+
+Offsets: `research/notes/01-shadp2p-game-re.md`, sections 1.2 and 1.3.
+
+**Debug log.** `[debug] log_player_state = true` in `bbcoop.toml` logs the player state about once per
+second of wall-clock time (not every N-th tick, since the tick rate varies):
+`player 0x... map m21_00_00_00 pos (x, y, z) heading h`, or `player: not available (map ...)` while no
+character exists (loading screens). The title screen has no tick and so no line. Filter:
+`grep -E "\[BBCoop|BB Co-op"`.

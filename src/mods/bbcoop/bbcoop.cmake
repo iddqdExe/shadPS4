@@ -14,6 +14,8 @@ add_library(bbcoop_core STATIC
     ${BBCOOP_DIR}/core/call_args.h
     ${BBCOOP_DIR}/core/config.cpp
     ${BBCOOP_DIR}/core/config.h
+    ${BBCOOP_DIR}/core/map_id.cpp
+    ${BBCOOP_DIR}/core/map_id.h
     ${BBCOOP_DIR}/core/scoped_entry.h
     ${BBCOOP_DIR}/core/task_queue.h
     ${BBCOOP_DIR}/binding/detour.cpp
@@ -52,6 +54,8 @@ target_link_libraries(shadps4 PRIVATE bbcoop_core)
 target_sources(shadps4 PRIVATE
     ${BBCOOP_DIR}/runtime/binding_runtime.cpp
     ${BBCOOP_DIR}/runtime/binding_runtime.h
+    ${BBCOOP_DIR}/runtime/game_api.cpp
+    ${BBCOOP_DIR}/runtime/game_api.h
     ${BBCOOP_DIR}/runtime/game_thread.cpp
     ${BBCOOP_DIR}/runtime/game_thread.h
     ${BBCOOP_DIR}/runtime/guest_memory.cpp
