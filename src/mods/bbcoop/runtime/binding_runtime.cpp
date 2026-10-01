@@ -58,12 +58,8 @@ bool IsEboot(std::string_view module_name) {
 
 /// Everything OnGameLoaded does; any early return leaves the mod inactive with nothing written.
 void Activate(std::uint64_t base, std::uint64_t size) {
+    // The game version was checked before the pristine copy was taken (OnExecutableSegmentLoaded).
     const auto& info = Common::ElfInfo::Instance();
-    if (info.AppVer() != kAppVersion) {
-        Disable(fmt::format("unsupported game version {} (only {} is supported)", info.AppVer(),
-                            kAppVersion));
-        return;
-    }
     // The setting, and the mode the loader acted on (module.cpp reads the mode).
     if (EmulatorSettings.IsRedZonePatchingEnabled() ||
         ::Core::WindowsGuestRedZoneProtection::IsStaticPatchingEnabled()) {
@@ -162,9 +158,17 @@ void OnExecutableSegmentLoaded(std::string_view module_name, std::uint64_t segme
     if (!IsEboot(module_name) || !BBCoop::GetConfig().enabled) {
         return;
     }
-    const auto serial = Common::ElfInfo::Instance().GameSerial();
+    const auto& info = Common::ElfInfo::Instance();
+    const auto serial = info.GameSerial();
     if (serial != kSerial) {
         LOG_INFO(BBCoop, "BB Co-op inactive: game {} is not Bloodborne EU ({})", serial, kSerial);
+        return;
+    }
+    // Before the 85 MB copy below: another version of the game would only copy and discard it.
+    // Without the copy OnGameLoaded does nothing, so the mod stays inactive.
+    if (info.AppVer() != kAppVersion) {
+        Disable(fmt::format("unsupported game version {} (only {} is supported)", info.AppVer(),
+                            kAppVersion));
         return;
     }
     if (!g_state.pristine.empty()) {
@@ -196,6 +200,17 @@ std::uint64_t SymbolAddress(Binding::SymbolId id) {
     const auto rva = g_state.resolved.Rva(static_cast<std::size_t>(id));
     ASSERT_MSG(rva.has_value(), "SymbolAddress: symbol {} is not resolved",
                Binding::SymbolName(id));
+    return g_state.base + *rva;
+}
+
+std::optional<std::uint64_t> TrySymbolAddress(Binding::SymbolId id) {
+    if (!g_state.active) {
+        return std::nullopt;
+    }
+    const auto rva = g_state.resolved.Rva(static_cast<std::size_t>(id));
+    if (!rva) {
+        return std::nullopt;
+    }
     return g_state.base + *rva;
 }
 

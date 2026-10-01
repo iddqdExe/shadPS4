@@ -57,9 +57,10 @@ from a per-frame tick.
 | Call | Use |
 |---|---|
 | `OnEveryFrame(owner, callback)` | Per-frame callback, called with the tick number (from 1) in registration order. Register before the game is loaded (from `BBCoop::Initialize()`). |
-| `PostToGameThread(task)` | Queue work for the next tick from any thread; `false` (check it) when the mod is inactive or 256 tasks are already waiting. Dropped tasks are counted and the total is added to the periodic tick line. |
+| `PostToGameThread(task)` | Queue work for the next tick from any thread; `false` (check it) when the mod is inactive, the tick stopped for good (its hook handler faulted: `game thread tick stopped for good` in the log) or 256 tasks are already waiting. Dropped tasks are counted and the total is added to the periodic tick line. `true` means queued: a task posted on the title screen waits until a save loads (no tick there). |
 | `IsGameThread()` / `FrameCount()` | Thread check and tick counter. `IsGameThread()` is false everywhere until the first tick. |
-| `CallGame<R>(symbol, args...)` | Call a game function by symbol (game thread, after the first tick; System V ABI). Arguments must be integers, enums, pointers or floats; pass `std::uint64_t` / `std::int64_t` explicitly for 64-bit parameters, no bare literals. The game function runs with the game's MXCSR (see below). |
+| `CallGame<R>(symbol, args...)` | Call a game function by symbol (game thread, after the first tick; System V ABI). Arguments must be integers, enums, pointers or floats; pass `std::uint64_t` / `std::int64_t` explicitly for 64-bit parameters, no bare literals. The game function runs with the game's MXCSR (see below). The symbol must be resolved (asserts otherwise): check an optional symbol with `TrySymbolAddress` first. |
+| `SymbolAddress(id)` / `TrySymbolAddress(id)` | (`runtime/binding_runtime.h`) A symbol's address; the first asserts when it is unresolved, the second returns `nullopt`. Optional symbols can be unresolved on an image other than the reference EU 1.09 one, so feature code uses `TrySymbolAddress` for them and turns itself off. A hook on an optional symbol makes it effectively required (an unresolved hook site disables the mod). |
 
 **Tick point.** The tick is a hook on `idle_heartbeat_epilogue`, RVA `0x01BFE882`: the
 `add rsp,0x7E8` (7 bytes `48 81 C4 E8 07 00 00`) before the register pops and the `ret` of the

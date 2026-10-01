@@ -49,6 +49,8 @@ std::atomic<std::thread::id> g_game_thread{};
 std::atomic<bool> g_foreign_thread_reported{false};
 std::atomic<bool> g_initialized{false};
 std::atomic<std::uint64_t> g_dropped_tasks{0}; ///< PostToGameThread calls that returned false.
+/// Cleared for good when the tick's hook handler faults (it is then disabled and never ticks).
+std::atomic<bool> g_tick_alive{true};
 // The next three are only touched by the game thread.
 std::chrono::steady_clock::time_point g_rate_start;
 bool g_in_tick = false;
@@ -140,11 +142,15 @@ void InitializeGameThread() {
         return;
     }
     RegisterHook(Binding::SymbolId::idle_heartbeat_epilogue, HookSiteKind::Mid, "game_thread",
-                 OnHeartbeat);
+                 OnHeartbeat, [] {
+                     g_tick_alive.store(false);
+                     LOG_CRITICAL(BBCoop, "game thread tick stopped for good: frame callbacks and "
+                                          "posted tasks no longer run, PostToGameThread refuses");
+                 });
 }
 
 bool PostToGameThread(GameTask task) {
-    if (IsActive() && Tasks().Push(std::move(task))) {
+    if (IsActive() && g_tick_alive.load() && Tasks().Push(std::move(task))) {
         return true;
     }
     g_dropped_tasks.fetch_add(1, std::memory_order_relaxed);

@@ -28,6 +28,8 @@ struct HookRecord {
     std::string owner;
     /// The handler, its fault flag and this record as the reporter's user pointer.
     Binding::SiteHandler handler;
+    /// Called by ReportFault after the fault is logged (RegisterHook's on_fault).
+    std::function<void()> on_fault;
 };
 
 /// One installed detour: the handlers of every record on its site, in registration order.
@@ -86,7 +88,12 @@ void ReportFault(const Binding::HookRunResult& result, void* user) {
                      Binding::ToString(result.earlier));
         break;
     case Binding::HookFault::None:
-        break;
+        return;
+    }
+    // RunSiteHandlers skips the handler from now on (two threads that fault in it at the same
+    // moment may both get here).
+    if (rec->on_fault) {
+        rec->on_fault();
     }
 }
 
@@ -108,8 +115,8 @@ std::string OwnersOf(const Binding::PlannedHook& hook,
 }
 } // namespace
 
-void RegisterHook(Binding::SymbolId site, HookSiteKind kind, std::string owner,
-                  HookHandler handler) {
+void RegisterHook(Binding::SymbolId site, HookSiteKind kind, std::string owner, HookHandler handler,
+                  std::function<void()> on_fault) {
     if (g_install_ran.load()) {
         LOG_ERROR(BBCoop_Binding, "hook '{}' at {} registered after the game was loaded; ignored",
                   owner, Binding::SymbolName(site));
@@ -126,6 +133,7 @@ void RegisterHook(Binding::SymbolId site, HookSiteKind kind, std::string owner,
     rec->owner = std::move(owner);
     rec->handler.handler = std::move(handler);
     rec->handler.report_user = rec.get();
+    rec->on_fault = std::move(on_fault);
     Records().push_back(std::move(rec));
 }
 

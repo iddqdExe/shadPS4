@@ -52,8 +52,19 @@ using HookHandler = std::function<void(Binding::HookContext&)>;
 /// asking for the other one is a fault of the later handler (its changes are undone, it is
 /// disabled, the earlier action stays). Hooks of different HookSiteKinds on one site make
 /// InstallHooks fail, which disables the whole mod (N4).
-void RegisterHook(Binding::SymbolId site, HookSiteKind kind, std::string owner,
-                  HookHandler handler);
+///
+/// A hook on an optional symbol makes that symbol effectively required: when it does not resolve
+/// (possible on an image other than the reference EU 1.09 one), PlanHooks refuses the hook and the
+/// whole mod is disabled. Feature code that can do without an optional symbol does not hook it;
+/// it reaches it through TrySymbolAddress (binding_runtime.h) and turns itself off when that is
+/// nullopt.
+///
+/// `on_fault`, when set, is called when the handler faults and is disabled for good (on the thread
+/// that hit the site, inside the guard, after the fault was logged; normally once, at most once
+/// per thread that faulted in it at the same moment). It must be short and should not throw (what
+/// it throws is swallowed); a typical use is clearing an "alive" flag.
+void RegisterHook(Binding::SymbolId site, HookSiteKind kind, std::string owner, HookHandler handler,
+                  std::function<void()> on_fault = {});
 
 /// The number of RegisterHook calls that were accepted (handlers, not sites).
 std::size_t HookCount();

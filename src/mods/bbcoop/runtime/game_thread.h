@@ -66,8 +66,15 @@ using FrameCallback = std::function<void(std::uint64_t frame)>;
 void InitializeGameThread();
 
 /// Queues `task` to run on the game thread at the next tick. Callable from any thread. Returns
-/// false when the mod is inactive or the queue (256 tasks) is full; the task is then dropped and
-/// counted (the periodic tick line in the log shows the total). Check the result.
+/// false when the mod is inactive, the tick has stopped for good (its hook handler faulted and
+/// was disabled: "game thread tick stopped for good" in the log) or the queue (256 tasks) is
+/// full; the task is then dropped and counted (the periodic tick line in the log shows the
+/// total). Check the result.
+///
+/// true means queued, not run soon: the tick does not run on the title screen (observed in the
+/// game: it starts when a save begins loading) and slows down or pauses on loading screens, so a
+/// task posted on the title screen waits until a save is loaded, and up to 256 such tasks fill
+/// the queue. Code that needs a timely answer checks FrameCount() (0 until the first tick).
 [[nodiscard]] bool PostToGameThread(GameTask task);
 
 /// True on the game thread once the first tick has run, false everywhere else (the game thread
@@ -82,6 +89,10 @@ std::uint64_t FrameCount();
 void OnEveryFrame(std::string owner, FrameCallback callback);
 
 /// Calls a game function by symbol. Game thread only, after the first tick (asserts otherwise).
+/// `fn` must be resolved: SymbolAddress asserts otherwise. A required symbol always is while the
+/// mod is active; for an optional one (possibly unresolved on an image other than the reference
+/// EU 1.09 one) check TrySymbolAddress(fn) first and skip the feature when it is nullopt. Hooking
+/// an optional symbol instead makes it effectively required (see RegisterHook in hooks.h).
 /// The game's calling convention is System V, and every argument is passed in one register as
 /// the type it has here, so integer arguments must have the width the game function reads: pass
 /// std::uint64_t or std::int64_t explicitly for a 64-bit parameter, never a bare literal (0 and
