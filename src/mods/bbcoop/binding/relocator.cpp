@@ -75,6 +75,41 @@ std::expected<std::size_t, std::string> StealLength(std::span<const std::uint8_t
     return length;
 }
 
+std::expected<std::optional<std::size_t>, std::string> FindEarlyControlTransfer(
+    std::span<const std::uint8_t> code) {
+    const auto decoder = MakeDecoder();
+    std::size_t offset = 0;
+    while (offset < code.size()) {
+        ZydisDecodedInstruction insn;
+        if (!ZYAN_SUCCESS(ZydisDecoderDecodeInstruction(&decoder, nullptr, code.data() + offset,
+                                                        code.size() - offset, &insn))) {
+            return std::unexpected(std::format("cannot decode instruction at +{:#x}", offset));
+        }
+        bool unconditional = false;
+        switch (insn.mnemonic) {
+        case ZYDIS_MNEMONIC_RET:
+        case ZYDIS_MNEMONIC_IRET:
+        case ZYDIS_MNEMONIC_IRETD:
+        case ZYDIS_MNEMONIC_IRETQ:
+        case ZYDIS_MNEMONIC_JMP:
+        case ZYDIS_MNEMONIC_UD0:
+        case ZYDIS_MNEMONIC_UD1:
+        case ZYDIS_MNEMONIC_UD2:
+        case ZYDIS_MNEMONIC_INT3:
+        case ZYDIS_MNEMONIC_HLT:
+            unconditional = true;
+            break;
+        default:
+            break;
+        }
+        if (unconditional && offset + insn.length < code.size()) {
+            return offset;
+        }
+        offset += insn.length;
+    }
+    return std::nullopt;
+}
+
 std::expected<std::vector<std::uint8_t>, std::string> RelocateInstructions(
     std::span<const std::uint8_t> code, std::uint64_t source, std::uint64_t target) {
     const auto decoder = MakeDecoder();

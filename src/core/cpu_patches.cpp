@@ -2192,6 +2192,22 @@ void RegisterPatchModule(void* module_ptr, u64 module_size, void* trampoline_are
                                           trampoline_area_size));
 }
 
+u8* ReserveModuleTrampolineSpace(const void* address, u64 size) {
+    auto* module = GetContainingModule(address);
+    if (module == nullptr || size == 0) {
+        return nullptr;
+    }
+    std::unique_lock lock{module->mutex};
+    auto& trampoline = module->trampoline_gen;
+    const size_t offset = trampoline.getSize();
+    try {
+        trampoline.setSize(offset + size);
+    } catch (const Xbyak::Error&) {
+        return nullptr;
+    }
+    return const_cast<u8*>(trampoline.getCode()) + offset;
+}
+
 void PrePatchInstructions(u64 segment_addr, u64 segment_size) {
 #if !defined(_WIN32) && !defined(__APPLE__)
     // Linux and others have an FS segment pointing to valid memory, so continue to do full

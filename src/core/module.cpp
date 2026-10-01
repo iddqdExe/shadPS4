@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #include <fmt/format.h>
+#include "bbcoop/runtime/binding_runtime.h"
 #include "common/alignment.h"
 #include "common/arch.h"
 #include "common/assert.h"
@@ -209,6 +210,7 @@ void Module::LoadModuleToMemory(u32& max_tls_index) {
             add_segment(elf_pheader[i]);
 #ifdef ARCH_X86_64
             if (elf_pheader[i].p_flags & PF_EXEC) {
+                BBCoop::Runtime::OnExecutableSegmentLoaded(name, segment_addr, segment_file_size);
                 PrePatchInstructions(segment_addr, segment_file_size);
 #ifdef _WIN32
                 // Windows static guest red-zone protection
@@ -346,6 +348,7 @@ void Module::LoadModuleToMemory(u32& max_tls_index) {
             MemoryPatcher::g_eboot_image_size = base_size;
             MemoryPatcher::g_eboot_name = name;
             MemoryPatcher::OnGameLoaded();
+            BBCoop::Runtime::OnGameLoaded(base_virtual_addr, base_size);
         }
     }
 }

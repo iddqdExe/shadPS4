@@ -15,6 +15,8 @@ add_library(bbcoop_core STATIC
     ${BBCOOP_DIR}/core/config.h
     ${BBCOOP_DIR}/binding/detour.cpp
     ${BBCOOP_DIR}/binding/detour.h
+    ${BBCOOP_DIR}/binding/hook_guard.cpp
+    ${BBCOOP_DIR}/binding/hook_guard.h
     ${BBCOOP_DIR}/binding/patch_table.cpp
     ${BBCOOP_DIR}/binding/patch_table.h
     ${BBCOOP_DIR}/binding/relocator.cpp
@@ -43,6 +45,12 @@ target_link_libraries(bbcoop_sigcheck PRIVATE bbcoop_core)
 
 target_link_libraries(shadps4 PRIVATE bbcoop_core)
 target_sources(shadps4 PRIVATE
+    ${BBCOOP_DIR}/runtime/binding_runtime.cpp
+    ${BBCOOP_DIR}/runtime/binding_runtime.h
+    ${BBCOOP_DIR}/runtime/guest_memory.cpp
+    ${BBCOOP_DIR}/runtime/guest_memory.h
+    ${BBCOOP_DIR}/runtime/hooks.cpp
+    ${BBCOOP_DIR}/runtime/hooks.h
     ${BBCOOP_DIR}/runtime/mod.cpp
     ${BBCOOP_DIR}/runtime/mod.h
 )

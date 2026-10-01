@@ -365,3 +365,46 @@ TEST(RelocatorTest, StealLengthReportsUndecodableBytes) {
     ASSERT_FALSE(length.has_value());
     EXPECT_NE(length.error().find("+0x1"), std::string::npos) << length.error();
 }
+
+TEST(RelocatorTest, FindsUnconditionalTransferBeforeTheEnd) {
+    using Bytes = std::vector<std::uint8_t>;
+    // A one-byte function (ret) followed by the padding of the next one.
+    EXPECT_EQ(FindEarlyControlTransfer(Bytes{0xC3, 0xCC, 0xCC, 0xCC, 0xCC}).value(), 0u);
+    // mov rax, rcx; ret; int3: the function ends at +3.
+    EXPECT_EQ(FindEarlyControlTransfer(Bytes{0x48, 0x89, 0xC8, 0xC3, 0xCC}).value(), 3u);
+    // ret imm16
+    EXPECT_EQ(FindEarlyControlTransfer(Bytes{0xC2, 0x08, 0x00, 0x90, 0x90}).value(), 0u);
+    // jmp short, jmp rel32 and jmp rax followed by more bytes.
+    EXPECT_EQ(FindEarlyControlTransfer(Bytes{0xEB, 0x10, 0x90, 0x90, 0x90}).value(), 0u);
+    EXPECT_EQ(FindEarlyControlTransfer(Bytes{0xE9, 0x00, 0x01, 0x00, 0x00, 0x90}).value(), 0u);
+    EXPECT_EQ(FindEarlyControlTransfer(Bytes{0x90, 0xFF, 0xE0, 0x90, 0x90}).value(), 1u);
+    // ud2, int3 and hlt.
+    EXPECT_EQ(FindEarlyControlTransfer(Bytes{0x0F, 0x0B, 0x90, 0x90, 0x90}).value(), 0u);
+    EXPECT_EQ(FindEarlyControlTransfer(Bytes{0x90, 0x90, 0xCC, 0x90, 0x90}).value(), 2u);
+    EXPECT_EQ(FindEarlyControlTransfer(Bytes{0xF4, 0x90, 0x90, 0x90, 0x90}).value(), 0u);
+    // The first of two transfers is reported.
+    EXPECT_EQ(FindEarlyControlTransfer(Bytes{0x90, 0xC3, 0xC3, 0x90, 0x90}).value(), 1u);
+}
+
+TEST(RelocatorTest, AcceptsUnconditionalTransferAsTheLastInstruction) {
+    using Bytes = std::vector<std::uint8_t>;
+    // A tail call that fills the whole region, and a ret at its end.
+    EXPECT_FALSE(FindEarlyControlTransfer(Bytes{0xE9, 0x00, 0x01, 0x00, 0x00}).value().has_value());
+    EXPECT_FALSE(FindEarlyControlTransfer(Bytes{0x90, 0x90, 0x90, 0x90, 0xC3}).value().has_value());
+    // add rsp, 0x7E8 (the per-frame epilogue site): no transfer at all.
+    EXPECT_FALSE(FindEarlyControlTransfer(Bytes{0x48, 0x81, 0xC4, 0xE8, 0x07, 0x00, 0x00})
+                     .value()
+                     .has_value());
+    // Calls and conditional jumps fall through, so they do not end the function.
+    EXPECT_FALSE(
+        FindEarlyControlTransfer(Bytes{0xE8, 0x00, 0x00, 0x00, 0x00, 0x90}).value().has_value());
+    EXPECT_FALSE(FindEarlyControlTransfer(Bytes{0x74, 0x03, 0x48, 0x89, 0xC8}).value().has_value());
+    EXPECT_FALSE(FindEarlyControlTransfer(Bytes{}).value().has_value());
+}
+
+TEST(RelocatorTest, EarlyControlTransferReportsUndecodableBytes) {
+    const std::vector<std::uint8_t> code{0x90, 0x0F};
+    const auto found = FindEarlyControlTransfer(code);
+    ASSERT_FALSE(found.has_value());
+    EXPECT_NE(found.error().find("+0x1"), std::string::npos) << found.error();
+}

@@ -6,6 +6,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <expected>
+#include <optional>
 #include <span>
 #include <string>
 #include <vector>
@@ -21,6 +22,14 @@ namespace BBCoop::Binding {
 /// relocated; RelocateInstructions does that.
 std::expected<std::size_t, std::string> StealLength(std::span<const std::uint8_t> code,
                                                     std::size_t min_bytes);
+
+/// The offset of the first unconditional control transfer (RET, IRET, JMP, UD0/UD1/UD2, INT3, HLT)
+/// in `code` that is not its last instruction; nullopt when there is none. The bytes after such an
+/// instruction are only reached by a jump to them (often they are the next function), so a hook
+/// must not steal them: a function shorter than the stolen length ends inside the region. Fails
+/// when `code` does not decode as whole instructions.
+std::expected<std::optional<std::size_t>, std::string> FindEarlyControlTransfer(
+    std::span<const std::uint8_t> code);
 
 /// Re-encodes `code`, which sits at `source_address`, to run from `target_address`: RIP-relative
 /// operands and relative jumps and calls keep their original targets. Short jcc/jmp are widened
