@@ -14,8 +14,8 @@
 
 using namespace BBCoop::Binding;
 
-TEST(SymbolsTest, TableHasOneSpecPerSymbolId) {
-    EXPECT_EQ(Eu109Symbols().size(), static_cast<std::size_t>(SymbolId::Count));
+// (One spec per SymbolId is a static_assert in symbols.cpp.)
+TEST(SymbolsTest, TableIsNotEmpty) {
     EXPECT_FALSE(Eu109Symbols().empty());
 }
 

@@ -69,6 +69,13 @@ std::expected<Text, std::string> FindText(std::span<const std::uint8_t> file) {
     if (file[4] != 2) {
         return std::unexpected("not a 64-bit ELF file");
     }
+    // Every field below is read with memcpy into a host integer, so the file must be little-endian.
+    if (file[5] != 1) {
+        return std::unexpected("not a little-endian ELF file");
+    }
+    if (const auto machine = ReadAt<std::uint16_t>(file, 0x12); machine != 0x3E) {
+        return std::unexpected(std::format("e_machine is {:#x}, not x86-64 (0x3e)", machine));
+    }
     const auto phoff = ReadAt<std::uint64_t>(file, 0x20);
     const auto phentsize = ReadAt<std::uint16_t>(file, 0x36);
     const auto phnum = ReadAt<std::uint16_t>(file, 0x38);
