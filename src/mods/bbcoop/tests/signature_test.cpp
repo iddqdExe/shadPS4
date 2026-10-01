@@ -4,6 +4,7 @@
 #include <cstdint>
 #include <span>
 #include <string>
+#include <type_traits>
 #include <vector>
 
 #include <gtest/gtest.h>
@@ -91,4 +92,10 @@ TEST(SignatureTest, FormatHexBytesOfEmptySpanIsEmpty) {
 TEST(SignatureTest, ToStringOfWildcardFreePatternMatchesFormatHexBytes) {
     const auto sig = *Signature::Parse("48 8b 05 0a");
     EXPECT_EQ(sig.ToString(), FormatHexBytes(sig.Bytes()));
+}
+
+TEST(SignatureTest, CannotBeDefaultConstructedIntoAnEmptyPattern) {
+    // An empty Signature would violate Parse's invariants (FindAll on it would match every offset).
+    static_assert(!std::is_default_constructible_v<Signature>);
+    SUCCEED();
 }

@@ -26,7 +26,8 @@ public:
     std::size_t Size() const {
         return bytes_.size();
     }
-    /// The pattern bytes; wildcard positions hold 0 (use HasWildcards/MatchesAt to tell them apart).
+    /// The pattern bytes; wildcard positions hold 0, so Bytes() alone cannot tell a literal 00
+    /// from a wildcard. Callers that need literal bytes must check HasWildcards() first.
     std::span<const std::uint8_t> Bytes() const {
         return bytes_;
     }
@@ -41,6 +42,8 @@ public:
     std::string ToString() const;
 
 private:
+    Signature() = default; ///< Only Parse builds one, so an empty pattern cannot exist.
+
     std::vector<std::uint8_t> bytes_;
     std::vector<bool> literal_;
     bool has_wildcards_ = false;
