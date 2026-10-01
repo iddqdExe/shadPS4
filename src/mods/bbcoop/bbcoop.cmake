@@ -13,6 +13,8 @@ set(BBCOOP_DIR ${CMAKE_CURRENT_LIST_DIR})
 add_library(bbcoop_core STATIC
     ${BBCOOP_DIR}/core/config.cpp
     ${BBCOOP_DIR}/core/config.h
+    ${BBCOOP_DIR}/binding/signature.cpp
+    ${BBCOOP_DIR}/binding/signature.h
 )
 # The top-level CMakeLists.txt calls include_directories(src) for the whole directory tree, and every
 # target inherits it. Clear the inherited list so bbcoop_core really only sees src/mods.
