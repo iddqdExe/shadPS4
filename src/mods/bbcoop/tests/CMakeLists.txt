@@ -33,6 +33,7 @@ add_executable(bbcoop_core_tests
     patch_table_test.cpp
     resolver_test.cpp
     signature_test.cpp
+    symbols_test.cpp
 )
 # Same isolation as bbcoop_core: drop the include_directories(src) inherited from the top level.
 set_target_properties(bbcoop_core_tests PROPERTIES INCLUDE_DIRECTORIES "")
