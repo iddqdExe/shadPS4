@@ -37,8 +37,8 @@ enum Sym : std::size_t {
     kCount
 };
 
-SymbolSpec Spec(std::string_view name, SymbolKind kind) {
-    return {name, kind, false, 0, 0, 0, TargetMode::Match, ""};
+SymbolSpec Spec(std::string_view name, SymbolKind kind, std::uint8_t max_steal = kMaxHookSteal) {
+    return {name, kind, false, 0, 0, 0, TargetMode::Match, "", max_steal};
 }
 
 void Put(std::vector<std::uint8_t>& text, std::size_t at, std::initializer_list<std::uint8_t> b) {
@@ -144,6 +144,38 @@ TEST_F(HookPlanTest, RefusesAFunctionThatEndsInsideTheStolenBytes) {
     const auto error = ErrorOf(Plan({{RetOnly, HookSiteKind::FunctionEntry, "a"}}));
     EXPECT_NE(error.find("hook ret_only: the code at 0x1060 ends at +0x0"), std::string::npos)
         << error;
+}
+
+TEST_F(HookPlanTest, RefusesAStealThatContainsABranchTarget) {
+    // mid_site steals 7 bytes; a branch somewhere targets mid_site + 6.
+    symbols[MidSite].max_steal = 6;
+    EXPECT_EQ(ErrorOf(Plan({{MidSite, HookSiteKind::Mid, "a"}})),
+              "hook mid_site: a direct branch in the game targets 0x1046, inside the 7 bytes the "
+              "hook would overwrite at 0x1040 (max_steal 6)");
+    // The table's default for a symbol nothing is known about refuses every hook.
+    symbols[FEntry].max_steal = 0;
+    EXPECT_NE(ErrorOf(Plan({{FEntry, HookSiteKind::FunctionEntry, "a"}})).find("(max_steal 0)"),
+              std::string::npos);
+}
+
+TEST_F(HookPlanTest, AcceptsAStealThatEndsAtABranchTarget) {
+    // A target at the first byte after the stolen ones is where the hook's jump returns to.
+    symbols[MidSite].max_steal = 7;
+    const auto plan = Plan({{MidSite, HookSiteKind::Mid, "a"}});
+    EXPECT_TRUE(plan.has_value()) << plan.error();
+}
+
+TEST_F(HookPlanTest, RefusesAStealLongerThanTheCheckedWindow) {
+    // sub rsp,0x28 (4 bytes), then a 13-byte mov qword cs:[rsp+0x100],0x2A: 17 bytes stolen.
+    Put(pristine, 0xD0,
+        {0x48, 0x83, 0xEC, 0x28, 0x2E, 0x48, 0xC7, 0x84, 0x24, 0x00, 0x01, 0x00, 0x00, 0x2A, 0x00,
+         0x00, 0x00});
+    live = pristine;
+    symbols.push_back(Spec("long_steal", SymbolKind::Site));
+    resolved.rvas.push_back(kTextRva + 0xD0);
+    EXPECT_EQ(ErrorOf(Plan({{kCount, HookSiteKind::Mid, "a"}})),
+              "hook long_steal: the hook would overwrite 17 bytes at 0x10d0, more than the 16 "
+              "checked for branch targets (max_steal 16)");
 }
 
 TEST_F(HookPlanTest, RefusesASiteWhoseInstructionsRunPastTheText) {

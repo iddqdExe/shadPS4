@@ -74,6 +74,20 @@ std::expected<std::vector<PlannedHook>, std::string> PlanHooks(const HookPlanInp
                 "trap, inside the {} bytes the hook overwrites",
                 name, rva, *transfers->early, *steal));
         }
+        // A direct branch elsewhere in the game to an instruction inside the stolen bytes would
+        // land in the middle of the hook's jump.
+        if (*steal > spec.max_steal) {
+            if (spec.max_steal < kMaxHookSteal) {
+                return std::unexpected(std::format(
+                    "hook {}: a direct branch in the game targets {:#x}, inside the {} bytes the "
+                    "hook would overwrite at {:#x} (max_steal {})",
+                    name, rva + spec.max_steal, *steal, rva, spec.max_steal));
+            }
+            return std::unexpected(std::format(
+                "hook {}: the hook would overwrite {} bytes at {:#x}, more than the {} checked "
+                "for branch targets (max_steal {})",
+                name, *steal, rva, kMaxHookSteal, spec.max_steal));
+        }
         // Several handlers on one site share its detour; they must agree on what the site is.
         if (const auto same = std::ranges::find(planned, rva, &PlannedHook::rva);
             same != planned.end()) {

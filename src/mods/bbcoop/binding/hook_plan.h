@@ -58,6 +58,9 @@ constexpr std::size_t kHookNeighbourhood = 16;
 ///    do not decode,
 ///  - an unconditional jump, ret or trap comes before the last stolen instruction (the function
 ///    ends inside the region and the jump would overwrite what follows),
+///  - the stolen bytes are longer than the symbol's SymbolSpec::max_steal: a direct branch
+///    somewhere in the image targets an instruction inside them, or they exceed the 16 bytes
+///    checked (indirect jumps, such as jump tables, are not covered by max_steal),
 ///  - an earlier request is on the same site with the other HookSiteKind,
 ///  - its stolen bytes overlap those of an earlier request on another site,
 ///  - the live text differs from the pristine text over the stolen bytes or within

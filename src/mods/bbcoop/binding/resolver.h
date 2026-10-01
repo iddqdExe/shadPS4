@@ -24,6 +24,10 @@ enum class TargetMode : std::uint8_t {
                      ///< target of its first [rip+disp] operand or relative immediate (call/jmp/jcc).
 };
 
+/// The most bytes a hook may overwrite at a code symbol: the detour's limit (BuildDetour), and the
+/// window sigmaker searches for branch targets (SymbolSpec::max_steal).
+constexpr std::uint8_t kMaxHookSteal = 16;
+
 struct SymbolSpec {
     std::string_view name;
     SymbolKind kind;
@@ -33,6 +37,14 @@ struct SymbolSpec {
     std::int32_t operand_offset; ///< See TargetMode.
     TargetMode mode;
     std::string_view pattern;
+    /// How many bytes from the symbol a hook may overwrite (PlanHooks refuses longer steals).
+    /// Function, Site, Patch: the distance from target_rva to the nearest target of a direct
+    /// branch (jmp, jcc, call, loop, jrcxz) inside (target_rva, target_rva + kMaxHookSteal], over
+    /// every complete function of the reference image; kMaxHookSteal when there is none. A jump
+    /// to such a target would land inside the hook's own jump. Computed by tools/re/sigmaker.
+    /// Not covered: indirect jumps and calls (jump tables, function pointers), whose targets are
+    /// not in the code. Global, Data: 0 (not hookable). The default 0 refuses every hook.
+    std::uint8_t max_steal = 0;
 };
 
 /// The executable segment of the loaded image. With is_reference_image set (the caller has verified

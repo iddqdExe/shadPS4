@@ -10,8 +10,9 @@ namespace BBCoop::Binding {
 
 namespace {
 constexpr SymbolSpec kSymbols[] = {
-#define BBCOOP_SYMBOL(name, kind, required, target, match, offset, mode, pattern)                  \
-    SymbolSpec{#name, SymbolKind::kind, required, target, match, offset, TargetMode::mode, pattern},
+#define BBCOOP_SYMBOL(name, kind, required, target, match, offset, mode, max_steal, pattern)       \
+    SymbolSpec{#name,  SymbolKind::kind, required, target,   match,                                \
+               offset, TargetMode::mode, pattern,  max_steal},
 #include "bbcoop/binding/data/eu109_symbols.inc"
 #undef BBCOOP_SYMBOL
 };

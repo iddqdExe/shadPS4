@@ -48,6 +48,30 @@ TEST(SymbolsTest, RequiredSymbolsArePresentAndRequired) {
     }
 }
 
+TEST(SymbolsTest, CodeSymbolsHaveAMaxStealAndDataSymbolsNone) {
+    for (const auto& spec : Eu109Symbols()) {
+        switch (spec.kind) {
+        case SymbolKind::Function:
+        case SymbolKind::Site:
+        case SymbolKind::Patch:
+            EXPECT_GE(spec.max_steal, 1) << spec.name;
+            EXPECT_LE(spec.max_steal, kMaxHookSteal) << spec.name;
+            break;
+        case SymbolKind::Global:
+        case SymbolKind::Data:
+            EXPECT_EQ(spec.max_steal, 0) << spec.name << ": not hookable";
+            break;
+        }
+    }
+}
+
+TEST(SymbolsTest, TheTickSiteMayBeHooked) {
+    // The game-thread tick steals the 7-byte add rsp,0x7E8 at idle_heartbeat_epilogue.
+    const auto id = FindSymbol("idle_heartbeat_epilogue");
+    ASSERT_TRUE(id.has_value());
+    EXPECT_GE(Eu109Symbols()[static_cast<std::size_t>(*id)].max_steal, 7);
+}
+
 TEST(SymbolsTest, EveryPatternParses) {
     for (const auto& spec : Eu109Symbols()) {
         const auto sig = Signature::Parse(spec.pattern);

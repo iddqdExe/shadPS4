@@ -16,7 +16,7 @@ namespace BBCoop::Binding {
 /// One id per row of the generated EU 1.09 symbol table (binding/data/eu109_symbols.inc, written by
 /// tools/re/sigmaker from docs/re/eu109-symbols.tsv); the value is the index into Eu109Symbols().
 enum class SymbolId : std::uint16_t {
-#define BBCOOP_SYMBOL(name, kind, required, target, match, offset, mode, pattern) name,
+#define BBCOOP_SYMBOL(name, kind, required, target, match, offset, mode, max_steal, pattern) name,
 #include "bbcoop/binding/data/eu109_symbols.inc"
 #undef BBCOOP_SYMBOL
     Count
