@@ -28,6 +28,7 @@ TEST(ConfigTest, EmptyInputGivesDefaults) {
     EXPECT_EQ(c.timeouts.reconnect_ms, 5000u);
     EXPECT_EQ(c.timeouts.dead_ms, 45000u);
     EXPECT_FALSE(c.debug.log_player_state);
+    EXPECT_FALSE(c.debug.self_test_exceptions);
     EXPECT_TRUE(result->warnings.empty());
 }
 
@@ -50,6 +51,7 @@ reconnect_ms = 4000
 dead_ms = 60000
 [debug]
 log_player_state = true
+self_test_exceptions = true
 )",
                                     "test.toml");
     ASSERT_TRUE(result.has_value()) << result.error();
@@ -66,6 +68,22 @@ log_player_state = true
     EXPECT_EQ(c.timeouts.reconnect_ms, 4000u);
     EXPECT_EQ(c.timeouts.dead_ms, 60000u);
     EXPECT_TRUE(c.debug.log_player_state);
+    EXPECT_TRUE(c.debug.self_test_exceptions);
+}
+
+TEST(ConfigTest, ParsesSelfTestExceptionsAlone) {
+    const auto result = ParseConfig("[debug]\nself_test_exceptions = true\n", "test.toml");
+    ASSERT_TRUE(result.has_value()) << result.error();
+    EXPECT_TRUE(result->config.debug.self_test_exceptions);
+    EXPECT_FALSE(result->config.debug.log_player_state);
+    EXPECT_TRUE(result->warnings.empty());
+}
+
+TEST(ConfigTest, RejectsNonBooleanSelfTestExceptions) {
+    const auto result = ParseConfig("[debug]\nself_test_exceptions = 1\n", "test.toml");
+    ASSERT_FALSE(result.has_value());
+    EXPECT_NE(result.error().find("debug.self_test_exceptions"), std::string::npos)
+        << result.error();
 }
 
 TEST(ConfigTest, RejectsPortOutOfRange) {

@@ -40,6 +40,9 @@ struct Timeouts {
 
 struct DebugConfig {
     bool log_player_state = false; ///< Log player, map and position once per second.
+    /// In-game proof of the exception firewall: two frame callbacks each throw once (a
+    /// std::exception and a non-std one); both are caught and disabled, the game keeps running.
+    bool self_test_exceptions = false;
 };
 
 struct Config {

@@ -13,6 +13,7 @@ set(BBCOOP_DIR ${CMAKE_CURRENT_LIST_DIR})
 add_library(bbcoop_core STATIC
     ${BBCOOP_DIR}/core/config.cpp
     ${BBCOOP_DIR}/core/config.h
+    ${BBCOOP_DIR}/core/task_queue.h
     ${BBCOOP_DIR}/binding/detour.cpp
     ${BBCOOP_DIR}/binding/detour.h
     ${BBCOOP_DIR}/binding/hook_guard.cpp
@@ -49,6 +50,8 @@ target_link_libraries(shadps4 PRIVATE bbcoop_core)
 target_sources(shadps4 PRIVATE
     ${BBCOOP_DIR}/runtime/binding_runtime.cpp
     ${BBCOOP_DIR}/runtime/binding_runtime.h
+    ${BBCOOP_DIR}/runtime/game_thread.cpp
+    ${BBCOOP_DIR}/runtime/game_thread.h
     ${BBCOOP_DIR}/runtime/guest_memory.cpp
     ${BBCOOP_DIR}/runtime/guest_memory.h
     ${BBCOOP_DIR}/runtime/hooks.cpp

@@ -39,6 +39,7 @@ add_executable(bbcoop_core_tests
     resolver_test.cpp
     signature_test.cpp
     symbols_test.cpp
+    task_queue_test.cpp
     # Lives in runtime/ but has no emulator dependencies (it only asks the host with VirtualQuery),
     # so the tests compile it directly.
     ${BBCOOP_DIR}/runtime/guest_memory.cpp

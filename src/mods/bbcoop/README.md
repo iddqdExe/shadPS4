@@ -25,3 +25,47 @@ parent repository.
 
 Rule: files outside `runtime/` must not include emulator headers. `bbcoop_core` only has
 `src/mods` on its include path, so such includes fail to compile.
+
+## Game thread
+
+`runtime/game_thread.h` is the one place where mod code touches the game safely: everything that
+reads the game's data or calls its functions (`CallGame`, the game API) runs on the game thread,
+from a per-frame tick.
+
+| Call | Use |
+|---|---|
+| `OnEveryFrame(owner, callback)` | Per-frame callback, called with the tick number (from 1) in registration order. Register before the game is loaded (from `BBCoop::Initialize()`). |
+| `PostToGameThread(task)` | Queue work for the next tick from any thread; `false` when the mod is inactive or 256 tasks are already waiting. |
+| `IsGameThread()` / `FrameCount()` | Thread check and tick counter. |
+| `CallGame<R>(symbol, args...)` | Call a game function by symbol (game thread only, System V ABI). |
+
+**Tick point.** The tick is a hook on `idle_heartbeat_epilogue`, RVA `0x01BFE882`: the
+`add rsp,0x7E8` (7 bytes `48 81 C4 E8 07 00 00`) before the register pops and the `ret` of the
+function at `0x01BFB2A0` (the per-frame idle/heartbeat function in the RE notes; the tick rate in
+the log shows whether it is one tick per frame). It is installed as a `Mid` hook and steals
+exactly that instruction. Checked on the decrypted EU 1.09 ELF: no direct branch or call
+anywhere in the image, and no RIP-relative operand, targets the bytes inside the stolen region
+(`0x01BFE883..0x01BFE888`), and the function has no indirect jump (so no jump table). The first
+thread that reaches the tick becomes the game thread; ticks from any other thread are ignored
+with one error line. If the hook were ever refused, the only per-frame fallback is
+`sos_status_update` (`0x01872360`, hooked as `FunctionEntry`); it is not a required symbol today, so
+switching means making its row required in `docs/re/eu109-symbols.extra.tsv` and regenerating the
+tables (`Build-SymbolDb`, `Generate-Signatures`, `bbcoop_sigcheck`).
+
+**Stack budget.** Callbacks and tasks run on the game's stack inside the hook handler: 16 KB at
+most for the callback and everything it calls, no deep recursion, no large stack buffers (the game's
+stacks have no guard page).
+
+**Exceptions.** An exception that leaves a task or a callback is caught and logged
+(`game-thread task threw`, `frame callback '<owner>' threw`, or the `unknown exception` variants).
+A task is dropped; a callback is disabled for good. The tick keeps running.
+`[debug] self_test_exceptions = true` in `bbcoop.toml` proves this in the game: two callbacks
+(`self_test_std_exception` and `self_test_unknown_exception`) each throw once on the first tick.
+Expected: the two `threw` lines, ticks go on, no `Unhandled Exception` line.
+
+**Log.** `BB Co-op active: 1 hooks, 0 patches`, `game thread tick started`, then
+`tick: frame N (R ticks/s)` every 1800 ticks. Filter a log with `grep -E "\[BBCoop|BB Co-op"`
+(plain words such as `tick` or `disabled` also match emulator lines).
+
+**Game states.** Which game states the tick runs in (title screen, loading, pause menu, world) is
+recorded here after the first in-game run.

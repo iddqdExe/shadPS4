@@ -175,8 +175,9 @@ std::expected<ConfigResult, std::string> ParseConfig(std::string_view text,
         r.ReadInt(*timeouts, "timeouts", "dead_ms", 1000, 600000, c.timeouts.dead_ms);
     }
     if (const auto* debug = r.Find(root, "debug")) {
-        r.WarnUnknown(*debug, "debug.", {"log_player_state"});
+        r.WarnUnknown(*debug, "debug.", {"log_player_state", "self_test_exceptions"});
         r.ReadBool(*debug, "debug", "log_player_state", c.debug.log_player_state);
+        r.ReadBool(*debug, "debug", "self_test_exceptions", c.debug.self_test_exceptions);
     }
     if (!r.Failed() && !(c.timeouts.suspect_ms < c.timeouts.reconnect_ms &&
                          c.timeouts.reconnect_ms < c.timeouts.dead_ms)) {

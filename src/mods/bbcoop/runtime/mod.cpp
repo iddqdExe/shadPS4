@@ -3,6 +3,10 @@
 
 #include "bbcoop/runtime/mod.h"
 
+#include <cstdint>
+#include <stdexcept>
+
+#include "bbcoop/runtime/game_thread.h"
 #include "common/logging/log.h"
 #include "common/path_util.h"
 
@@ -11,6 +15,16 @@ namespace BBCoop {
 namespace {
 Core::Config g_config;
 CliOverrides g_cli;
+
+/// [debug] self_test_exceptions: in-game proof that an exception that leaves a frame callback
+/// cannot reach the guest. Each callback throws once and is disabled by the tick afterwards.
+void ArmExceptionSelfTest() {
+    Runtime::OnEveryFrame("self_test_std_exception", [](std::uint64_t) {
+        throw std::runtime_error("BB Co-op self-test exception");
+    });
+    Runtime::OnEveryFrame("self_test_unknown_exception", [](std::uint64_t) { throw 42; });
+    LOG_INFO(BBCoop, "exception self-test armed: two frame callbacks will each throw once");
+}
 } // namespace
 
 void SetCliOverrides(const CliOverrides& overrides) {
@@ -38,6 +52,12 @@ void Initialize() {
              "BB Co-op config: enabled={} port={}{} upnp={} echo_loss={} auto_grant={}",
              g_config.enabled, g_config.net.port, g_cli.port ? " (cli)" : "", g_config.net.upnp,
              Core::ToString(g_config.host.echo_loss), Core::ToString(g_config.host.auto_grant));
+    if (g_config.enabled) {
+        Runtime::InitializeGameThread();
+        if (g_config.debug.self_test_exceptions) {
+            ArmExceptionSelfTest();
+        }
+    }
 }
 
 const Core::Config& GetConfig() {
