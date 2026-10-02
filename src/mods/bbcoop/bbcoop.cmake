@@ -72,3 +72,9 @@ if (BBCOOP_TESTS)
     enable_testing()
     add_subdirectory(${BBCOOP_DIR}/tests ${CMAKE_BINARY_DIR}/bbcoop_tests)
 endif()
+
+# SPIKE CODE (S6) - throwaway, see docs/spikes/S6-network-libraries.md. Do not build on this.
+option(BBCOOP_SPIKE_S6 "Build the S6 network library spike" OFF)
+if (BBCOOP_SPIKE_S6)
+    add_subdirectory(${BBCOOP_DIR}/spikes/s6 ${CMAKE_BINARY_DIR}/bbcoop_spike_s6)
+endif()
